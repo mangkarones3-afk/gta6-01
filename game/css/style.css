@@ -1,0 +1,64 @@
+/* Solano Bay — page + HUD styling. Sunset-on-navy theme. */
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: #14101d; color: #f2e7c8;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  display: flex; justify-content: center; align-items: flex-start;
+  min-height: 100vh; padding: 12px 0;
+}
+#stage { position: relative; width: 1280px; height: 800px; }
+canvas#game { display: block; background: #cfa96e; border: 2px solid #3a2c14; }
+
+#hud-top-left { position: absolute; top: 14px; left: 16px; pointer-events: none; }
+#hud-cash { font-size: 30px; font-weight: 800; color: #ffd94d; text-shadow: 2px 2px 0 #000; }
+#hud-stars { font-size: 24px; color: #f2e7c8; text-shadow: 1px 1px 0 #000; min-height: 28px; letter-spacing: 3px; }
+#hud-stars.on { color: #ffcf3d; }
+#hud-hp { width: 190px; height: 13px; background: rgba(0,0,0,0.55); border: 1px solid #000; margin-top: 4px; }
+#hud-hp-fill { height: 100%; width: 100%; background: #57c04a; transition: width 0.15s; }
+
+#hud-dispatch {
+  position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+  background: rgba(16,20,34,0.82); color: #bcd3ff; padding: 7px 16px;
+  font-size: 15px; border-left: 4px solid #2a6aff; opacity: 0; transition: opacity 0.3s;
+  max-width: 640px; text-align: center; pointer-events: none;
+}
+#hud-banner {
+  position: absolute; top: 120px; left: 50%; transform: translateX(-50%);
+  font-size: 34px; font-weight: 800; color: #ffd94d; text-shadow: 2px 2px 0 #000;
+  opacity: 0; transition: opacity 0.3s; pointer-events: none; white-space: nowrap;
+}
+
+#hud-top-right { position: absolute; top: 14px; right: 16px; text-align: right; pointer-events: none; }
+#minimap { border: 2px solid rgba(0,0,0,0.6); background: #d9bd8a; }
+#hud-weapon { font-size: 17px; font-weight: 700; color: #fff; text-shadow: 1px 1px 0 #000; margin-top: 5px; }
+
+#hud-bottom { position: absolute; left: 16px; bottom: 12px; right: 16px; pointer-events: none; }
+#hud-dialogue {
+  display: inline-block; background: rgba(20,14,4,0.85); color: #ffe9a0;
+  padding: 8px 14px; font-size: 16px; max-width: 760px; opacity: 0; transition: opacity 0.3s;
+  border-left: 4px solid #e8a317; margin-bottom: 6px;
+}
+#hud-objective {
+  font-size: 19px; font-weight: 700; color: #fff; text-shadow: 1px 1px 0 #000;
+  background: rgba(0,0,0,0.35); padding: 5px 10px; display: inline-block; max-width: 900px;
+}
+#hud-help { font-size: 12px; color: rgba(255,255,255,0.75); text-shadow: 1px 1px 0 #000; margin-top: 5px; }
+
+#wasted {
+  position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+  background: rgba(60,0,0,0.45); z-index: 5;
+}
+#wasted span { font-size: 84px; font-weight: 900; letter-spacing: 12px; color: #c1272d; text-shadow: 3px 3px 0 #000; }
+
+#start-screen {
+  position: absolute; inset: 0; z-index: 6; cursor: pointer;
+  background: linear-gradient(180deg, rgba(38,20,60,0.88), rgba(120,50,20,0.82) 55%, rgba(20,12,28,0.92));
+  display: flex; align-items: center; justify-content: center; text-align: center;
+}
+#start-inner { max-width: 720px; padding: 24px; }
+#start-screen h1 { font-size: 76px; margin: 0 0 6px; letter-spacing: 6px; color: #ffd94d; text-shadow: 4px 4px 0 #7a1f1f; }
+#start-screen .pitch { font-size: 26px; font-weight: 700; color: #fff; margin: 4px 0 14px; }
+#start-screen .story { font-size: 17px; line-height: 1.5; color: #f2e7c8; }
+#start-screen .controls { font-size: 14px; color: #bcd3ff; margin-top: 18px; }
+#start-screen .go { font-size: 20px; font-weight: 800; color: #ffd94d; margin-top: 22px; animation: pulse 1.2s infinite alternate; }
+@keyframes pulse { from { opacity: 0.55; } to { opacity: 1; } }
