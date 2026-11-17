@@ -1,178 +1,237 @@
-// missions.js — the campaign: five story jobs for the Bay Rats, plus
-// repeatable side work. Reno Kade owes the crew; each job pays down
-// the debt and raises his name. Steps are data: goto / steal / heat /
-// fight / deliver / chop / cooldown. The heat step (mission 3) is the
-// heart of the game: make the SBPD come, then make them lose you.
-import { STORY } from './config.js';
-import { clamp } from './rng.js';
+// missions.js — Mara Voss's jobs. One job: run the five-mission story arc
+// (and three repeatable side jobs) as staged objectives with dialogue,
+// scripted heat, and exact cash payouts.
 
-const GARAGE = { x: -300, z: 300 };
-const CLUB = { x: -540, z: 60 };
-const MARKET = { x: -260, z: 360 };
-const TOWER = { x: 60, z: -40 };
+import { burst } from './combat.js';
 
-const DEFS = [
-  { id: 'm1', title: 'First Wheels', intro: 'Mara: "Debt collectors ride in style, Reno. Steal me a car worth a damn and bring it to the garage."',
-    steps: [
-      { kind: 'steal', label: 'Steal any car' },
-      { kind: 'goto', label: 'Bring the car to Taller Voss', x: GARAGE.x, z: GARAGE.z, inCar: true },
-    ], pay: 400 },
-  { id: 'm2', title: 'Cash in the Registers', intro: 'Mara: "Banco del Sol owes the crew. Rob the till, and don\'t stick around for the photo."',
-    steps: [
-      { kind: 'goto', label: 'Reach Banco del Sol', x: 30, z: 60 },
-      { kind: 'stand', label: 'Rob the till — stay in the circle', x: 30, z: 60, t: 4 },
-      { kind: 'heatstep', label: 'Escape the heat', minStars: 0 },
-    ], pay: 900 },
-  { id: 'm3', title: 'Make Some Noise', intro: 'Mara: "The crew needs a distraction downtown. Three stars of noise, then vanish. Can you do vanishing?"',
-    steps: [
-      { kind: 'goto', label: 'Reach Solano Tower', x: TOWER.x, z: TOWER.z },
-      { kind: 'heat', label: 'Raise the heat to 3 stars', minStars: 3 },
-      { kind: 'heatstep', label: 'Lose the heat — break line of sight', minStars: 0 },
-    ], pay: 1500 },
-  { id: 'm4', title: 'Rats in the Market', intro: 'Mara: "A rival crew is shaking down Mercado Central. Clear them out. All of them."',
-    steps: [
-      { kind: 'goto', label: 'Reach Mercado Central', x: MARKET.x, z: MARKET.z },
-      { kind: 'fight', label: 'Clear the rival crew', x: MARKET.x, z: MARKET.z, count: 4 },
-    ], pay: 2200 },
-  { id: 'm5', title: 'The Velero Job', intro: 'Mara: "One last job. The Velero kingpin is at his club. End it, and the bay is ours."',
-    steps: [
-      { kind: 'goto', label: 'Reach Club Velero', x: CLUB.x, z: CLUB.z },
-      { kind: 'fight', label: 'Take down the kingpin', x: CLUB.x, z: CLUB.z, count: 3, king: true },
-      { kind: 'heatstep', label: 'Escape with the bay watching', minStars: 0 },
-    ], pay: 4000 },
-];
+export const STORY_COUNT = 5;
+const PAYOUTS = [400, 500, 1000, 1200, 1900]; // sums to the $5,000 debt
 
-export class Missions {
-  constructor(game) {
-    this.game = game;
-    this.index = 0; this.step = 0; this.state = 'offer'; // offer -> active -> done
-    this.standT = 0; this.kills = 0; this.steals = 0;
-    this.side = null; this.sideN = 0;
-    this.done = [];
-    this.banner = null; this.bannerT = 0;
-    this.dialogue = null; this.dialogueT = 0;
-  }
-  get def() { return DEFS[this.index] || null; }
-  start() {
-    if (!this.def) return;
-    this.state = 'active'; this.step = 0; this.standT = 0; this.kills = 0;
-    this.stealsAtStart = this.steals; // the steal step counts fresh thefts only
-    this.showDialogue(this.def.intro, 7);
-    this.banner = this.def.title; this.bannerT = 3;
-  }
-  showDialogue(text, t) { this.dialogue = text; this.dialogueT = t || 5; }
-  stepObj() {
-    if (this.side) {
-      const s = this.side;
-      if (s.stage === 'goto') return { kind: 'goto', x: s.x, z: s.z, label: s.label };
-      if (s.stage === 'deliver') return { kind: 'goto', x: s.dx, z: s.dz, label: s.label };
-      return { kind: s.kind, x: s.x, z: s.z, label: s.label };
+export function say(S, name, lines, dur = 6.5) {
+  S.dialogue = { name, lines, until: S.time + dur };
+}
+
+function poi(S, id) { return S.city.pois.find(p => p.id === id); }
+function near(S, x, y, r) { return Math.hypot(S.player.x - x, S.player.y - y) < r; }
+
+export function createMission() {
+  return {
+    idx: -1, side: false, name: '', stage: '', objective: null,
+    markedCar: null, data: {}, onSteal: null, done: false,
+  };
+}
+
+function setObjective(S, x, y, label) { S.mission.objective = { x, y, label }; }
+
+function pay(S, amount, label) {
+  S.player.cash += amount;
+  S.toast = { text: `${label}  +$${amount}`, until: S.time + 3.2 };
+  if (S.audio) S.audio.cash();
+}
+
+// ---------- story missions ----------
+
+export function startStory(S, idx) {
+  const M = S.mission;
+  Object.assign(M, { idx, side: false, done: false, markedCar: null, data: {}, onSteal: null });
+  const P = S.player;
+  if (idx === 0) {
+    M.name = 'First Wheels';
+    M.stage = 'steal';
+    say(S, 'Mara Voss', [
+      'Reno. You owe me five grand, so you work. Simple.',
+      'An amber coupe near Mercado Central is marked. Take it — quiet hands, fast feet.',
+      'Drop it at Taller Brisa in Alto. Do not scratch the paint.',
+    ], 9);
+    // mark the parked car nearest the market
+    const mk = poi(S, 'mercado-central');
+    let best = null, bd = 1e9;
+    for (const c of S.cars) {
+      if (c.kind !== 'parked') continue;
+      const d = Math.hypot(c.x - mk.x, c.y - mk.y);
+      if (d < bd) { bd = d; best = c; }
     }
-    if (this.state !== 'active' || !this.def) return null;
-    const s = this.def.steps[this.step];
-    if (!s) return null;
-    if (s.kind === 'heat') return { kind: 'heat', x: 0, z: 0, label: s.label };
-    if (s.kind === 'heatstep') return { kind: 'heat', x: 0, z: 0, label: s.label };
-    return { kind: s.kind, x: s.x || 0, z: s.z || 0, label: s.label };
-  }
-  currentLabel() {
-    const o = this.stepObj();
-    if (o) return o.label;
-    if (this.state === 'offer' && this.def) return `New job: ${this.def.title} — press M`;
-    if (!this.def) return 'Solano Bay is yours. Side jobs: press J.';
-    return '';
-  }
-  registerSteal() { this.steals++; }
-  registerKill() { this.kills++; }
-  advance() {
-    const d = this.def;
-    this.step++;
-    if (this.step >= d.steps.length) {
-      this.state = 'done'; this.done.push(d.id);
-      this.game.player.cash += d.pay;
-      this.game.audio.cash();
-      this.banner = `Job done: +$${d.pay}`; this.bannerT = 3.5;
-      this.showDialogue(d.id === 'm5' ? 'Mara: "The bay is ours, Reno. Drinks at the Velero — on the house."' :
-        'Mara: "Clean work. Come see me when you want more."', 6);
-      this.index++;
-      if (this.def) this.state = 'offer';
+    best.marked = true; best.color = '#ffb020'; best.roof = '#3a2a10';
+    M.markedCar = best;
+    setObjective(S, best.x, best.y, 'Steal the amber coupe');
+    M.onSteal = (st, car) => {
+      if (car !== M.markedCar || M.stage !== 'steal') return;
+      M.stage = 'deliver';
+      st.wantedAPI.addHeat(st, 45, 'STOLEN COUPE SPOTTED');
+      const t = poi(st, 'taller-brisa');
+      setObjective(st, t.x, t.y, 'Deliver the coupe to Taller Brisa');
+      say(st, 'Mara Voss', ['That alarm is not my problem. Drive, Reno. Alto, now.'], 5);
+    };
+  } else if (idx === 1) {
+    M.name = 'Cobro Pendiente';
+    M.stage = 'goto';
+    say(S, 'Mara Voss', [
+      'A stallholder at the Mercado owes us and sent muscle instead of money.',
+      'Collect what is ours. However you need to.',
+    ], 8);
+    const mk = poi(S, 'mercado-central');
+    setObjective(S, mk.x, mk.y, 'Go to Mercado Central');
+  } else if (idx === 2) {
+    M.name = 'Hot Pickup';
+    M.stage = 'goto';
+    say(S, 'Mara Voss', [
+      'Almacén Gris, down by the Marina. A package is waiting and nobody can know.',
+      'Whatever happens — lose the police BEFORE you come back to me.',
+    ], 8);
+    const w = poi(S, 'almacen-gris');
+    setObjective(S, w.x, w.y, 'Pick up at Almacén Gris');
+  } else if (idx === 3) {
+    M.name = 'Palmera Heat';
+    M.stage = 'goto';
+    say(S, 'Mara Voss', [
+      'A courier waits at Mirador Café with my ledger. Her rivals know it.',
+      'Bring her across Palmera Park to the pond. Keep her breathing.',
+    ], 8);
+    const c = poi(S, 'mirador-cafe');
+    setObjective(S, c.x, c.y, 'Meet the courier at Mirador Café');
+  } else if (idx === 4) {
+    M.name = 'The Paloma Run';
+    M.stage = 'steal';
+    say(S, 'Mara Voss', [
+      'Last one, Reno. A guest at Hotel Paloma leaves a very fast car unattended.',
+      'Take it to the Marina Club pier. Then we are square — all five grand.',
+    ], 8.5);
+    const h = poi(S, 'hotel-paloma');
+    let best = null, bd = 1e9;
+    for (const c of S.cars) {
+      if (c.kind !== 'parked') continue;
+      const d = Math.hypot(c.x - h.x, c.y - h.y);
+      if (d < bd) { bd = d; best = c; }
     }
-  }
-  update(dt) {
-    if (this.bannerT > 0) this.bannerT -= dt;
-    if (this.dialogueT > 0) this.dialogueT -= dt;
-    const g = this.game, p = g.player, w = g.wanted;
-    if (this.side) { this.updateSide(dt); return; }
-    if (this.state !== 'active' || !this.def) return;
-    const s = this.def.steps[this.step];
-    if (!s) return;
-    const d = Math.hypot(p.x - (s.x || 0), p.z - (s.z || 0));
-    switch (s.kind) {
-      case 'goto': if (d < 26 && (!s.inCar || p.car)) this.advance(); break;
-      case 'steal': if (this.steals > (this.stealsAtStart || 0)) this.advance(); break;
-      case 'stand':
-        if (d < 30) { this.standT += dt; if (this.standT >= s.t) { w.addCrime('robbery', p.x, p.z); this.advance(); } }
-        else this.standT = Math.max(0, this.standT - dt);
-        break;
-      case 'heat': if (w.stars >= s.minStars) this.advance(); break;
-      case 'heatstep':
-        // heat must have arrived and then been shaken off: COOLDOWN is
-        // the wanted state right after SEARCH ends — heat is leaving.
-        if (w.state === 'COOLDOWN') this.advance();
-        break;
-      case 'fight':
-        if (!this._spawned) {
-          this._spawned = true; this.kills = 0;
-          g.combat.cityRef = g.city;
-          g.combat.spawnEnemies(s.x, s.z, s.count, s.king ? 'king' : 'gang');
-        }
-        if (this.kills >= s.count) { this._spawned = false; this.advance(); }
-        break;
-    }
-  }
-  // --- side jobs (repeatable) ---
-  startSide() {
-    const g = this.game;
-    this.sideN++;
-    const kind = ['chop', 'delivery', 'taxi'][this.sideN % 3];
-    if (kind === 'chop') {
-      const target = g.city.parked[Math.floor(Math.random() * g.city.parked.length)];
-      this.side = { kind, stage: 'goto', label: 'Steal the marked car', x: target.x, z: target.z, carRef: target,
-        dx: GARAGE.x, dz: GARAGE.z, pay: 350 };
-    } else if (kind === 'delivery') {
-      this.side = { kind, stage: 'goto', label: 'Pick up the package at the market', x: MARKET.x, z: MARKET.z,
-        dx: TOWER.x, dz: TOWER.z, pay: 300 };
-    } else {
-      this.side = { kind, stage: 'goto', label: 'Pick up the fare downtown', x: 120, z: -40,
-        dx: CLUB.x, dz: CLUB.z, pay: 280 };
-    }
-    this.showDialogue(`Side job: ${this.side.label}. Pay $${this.side.pay}.`, 5);
-  }
-  updateSide(dt) {
-    const g = this.game, p = g.player;
-    const s = this.side;
-    if (s.stage === 'goto') {
-      const d = Math.hypot(p.x - s.x, p.z - s.z);
-      if (d < 26) {
-        if (s.kind === 'chop' && !p.car) { this.showDialogue('You need the car — get in it.', 2); return; }
-        s.stage = 'deliver';
-        s.label = s.kind === 'chop' ? 'Deliver the car to Taller Voss' :
-          s.kind === 'delivery' ? 'Deliver the package to Solano Tower' : 'Drop the fare at Club Velero';
-      }
-    } else if (s.stage === 'deliver') {
-      const d = Math.hypot(p.x - s.dx, p.z - s.dz);
-      if (d < 30 && (!s.kind || s.kind !== 'chop' || p.car)) {
-        p.cash += s.pay; g.audio.cash();
-        this.banner = `Side job done: +$${s.pay}`; this.bannerT = 3;
-        this.side = null;
-      }
-    }
-  }
-  serialize() { return { index: this.index, done: this.done, sideN: this.sideN }; }
-  deserialize(d) {
-    if (!d) return;
-    this.index = d.index || 0; this.done = d.done || []; this.sideN = d.sideN || 0;
-    this.state = this.def ? 'offer' : 'done';
+    best.marked = true; best.color = '#e33f2e'; best.roof = '#20242e';
+    M.markedCar = best;
+    setObjective(S, best.x, best.y, 'Steal the red coupe at Hotel Paloma');
+    M.onSteal = (st, car) => {
+      if (car !== M.markedCar || M.stage !== 'steal') return;
+      M.stage = 'deliver';
+      st.wantedAPI.addHeat(st, 60, 'PALOMA COUPE TAKEN');
+      const mc = poi(st, 'marina-club');
+      setObjective(st, mc.x, mc.y, 'Deliver to Marina Club, on the pier');
+    };
   }
 }
-STORY.missions = DEFS.map(d => d.title);
+
+function completeStory(S) {
+  const M = S.mission;
+  pay(S, PAYOUTS[M.idx], 'JOB DONE');
+  const next = M.idx + 1;
+  M.objective = null; M.onSteal = null; M.markedCar = null;
+  if (next < STORY_COUNT) {
+    S.toast = { text: `DEBT LEFT: $${5000 - PAYOUTS.slice(0, next).reduce((a, b) => a + b, 0)}`, until: S.time + 3.4 };
+    startStory(S, next);
+  } else {
+    M.done = true; M.idx = STORY_COUNT;
+    S.toast = { text: 'DEBT CLEARED — SOLANO BAY IS YOURS', until: S.time + 5 };
+    say(S, 'Mara Voss', ['Square, Reno. All five grand. The bay is yours now — try not to owe me again.'], 7);
+  }
+  if (S.saveGame) S.saveGame(S);
+}
+
+// ---------- side jobs ----------
+
+const SIDE_DEFS = [
+  { name: 'Quayside Parcel', pay: 150, from: 'marina-club', to: 'farmacia-luz', verb: 'Take the parcel to Farmacia Luz' },
+  { name: 'Market Run', pay: 170, from: 'mercado-central', to: 'hotel-paloma', verb: 'Take the goods to Hotel Paloma' },
+  { name: 'Café Drop', pay: 130, from: 'cine-solano', to: 'mirador-cafe', verb: 'Take the envelope to Mirador Café' },
+];
+
+export function startSide(S) {
+  const M = S.mission;
+  if (M.objective && !M.side) return; // story first
+  const def = SIDE_DEFS[Math.floor(Math.random() * SIDE_DEFS.length)];
+  Object.assign(M, { side: true, name: def.name, stage: 'pickup', done: false, data: { def }, onSteal: null, markedCar: null });
+  const f = poi(S, def.from);
+  setObjective(S, f.x, f.y, 'Pick up at ' + f.name);
+  say(S, 'Mara Voss', [`Quick favour, off the books: ${def.name.toLowerCase()}. Pays $${def.pay}.`], 5.5);
+}
+
+function completeSide(S) {
+  const M = S.mission;
+  pay(S, M.data.def.pay, 'SIDE JOB DONE');
+  M.objective = null; M.side = false;
+  // hand the story thread back
+  if (!M.done && M.idx >= 0 && M.idx < STORY_COUNT) startStory(S, M.idx);
+}
+
+// ---------- per-frame ----------
+
+export function updateMissions(S, dt) {
+  const M = S.mission;
+  if (!M.objective || S.player.dead) return;
+  const o = M.objective;
+
+  if (M.side) {
+    if (M.stage === 'pickup' && near(S, o.x, o.y, 30)) {
+      M.stage = 'deliver';
+      const t = poi(S, M.data.def.to);
+      setObjective(S, t.x, t.y, M.data.def.verb);
+      burst(S, S.player.x, S.player.y, '#ffd76a', 8, 40);
+    } else if (M.stage === 'deliver' && near(S, o.x, o.y, 32)) completeSide(S);
+    return;
+  }
+
+  switch (M.idx) {
+    case 0:
+      if (M.stage === 'deliver' && S.player.car === M.markedCar && near(S, o.x, o.y, 40)) completeStory(S);
+      break;
+    case 1: {
+      if (M.stage === 'goto' && near(S, o.x, o.y, 34)) {
+        M.stage = 'muscle';
+        const mk = poi(S, 'mercado-central');
+        const thug = S.peds.find(p => !p.dead && !p.hostile && Math.hypot(p.x - mk.x, p.y - mk.y) > 60)
+          || S.peds.find(p => !p.dead && !p.hostile);
+        if (thug) { thug.hostile = true; thug.hp = 46; thug.color = '#20242e'; M.data.thug = thug; }
+        setObjective(S, thug ? thug.x : mk.x, thug ? thug.y : mk.y, 'Deal with the muscle');
+        say(S, 'Mara Voss', ['That is him. Collect, Reno.'], 4);
+      } else if (M.stage === 'muscle') {
+        const t = M.data.thug;
+        if (t) setObjective(S, t.x, t.y, 'Deal with the muscle');
+        if (!t || t.dead) {
+          M.stage = 'collect';
+          const mk = poi(S, 'mercado-central');
+          setObjective(S, mk.x, mk.y, 'Collect the payment');
+        }
+      } else if (M.stage === 'collect' && near(S, o.x, o.y, 30)) completeStory(S);
+      break;
+    }
+    case 2:
+      if (M.stage === 'goto' && near(S, o.x, o.y, 34)) {
+        M.stage = 'escape';
+        S.wantedAPI.addHeat(S, 210, 'WAREHOUSE ALARM');
+        S.dispatch = { text: 'ALL UNITS — WAREHOUSE ON THE MARINA, MOVE', until: S.time + 4 };
+        setObjective(S, S.player.x, S.player.y, 'Lose the SBPD');
+        say(S, 'Mara Voss', ['You are lit up like a ferry, Reno. Vanish. THEN come to the Mercado.'], 6);
+      } else if (M.stage === 'escape') {
+        setObjective(S, S.player.x, S.player.y, 'Lose the SBPD');
+        if (S.wanted.stars === 0 && S.wanted.phase === 'clear') {
+          M.stage = 'plaza';
+          const mk = poi(S, 'mercado-central');
+          setObjective(S, mk.x, mk.y, 'Return to Mercado Central');
+        }
+      } else if (M.stage === 'plaza' && near(S, o.x, o.y, 36)) completeStory(S);
+      break;
+    case 3:
+      if (M.stage === 'goto' && near(S, o.x, o.y, 32)) {
+        M.stage = 'cross';
+        const pond = S.city.pond;
+        setObjective(S, pond.x, pond.y, 'Cross Palmera Park to the pond');
+        // two rival crew wait in the park
+        let spawned = 0;
+        for (const p of S.peds) {
+          if (spawned >= 2) break;
+          if (p.dead || p.hostile) continue;
+          if (Math.hypot(p.x - pond.x, p.y - pond.y) < 190) { p.hostile = true; p.hp = 46; p.color = '#20242e'; spawned++; }
+        }
+        say(S, 'Mara Voss', ['Rivals in the park, Reno. The pond — get her there.'], 5);
+      } else if (M.stage === 'cross' && near(S, o.x, o.y, 40)) completeStory(S);
+      break;
+    case 4:
+      if (M.stage === 'deliver' && S.player.car === M.markedCar && near(S, o.x, o.y, 44)) completeStory(S);
+      break;
+  }
+}

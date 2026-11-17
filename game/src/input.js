@@ -1,39 +1,33 @@
-// input.js — keyboard + mouse state. down() for held keys, hit() for
-// edge-triggered presses (consumed once), axis() for WASD/arrows.
-export class Input {
-  constructor(canvas) {
-    this.keys = new Set(); this.pressed = new Set();
-    this.mouse = { x: 0, y: 0, down: false };
-    window.addEventListener('keydown', e => {
-      const k = e.key.toLowerCase();
-      if (!this.keys.has(k)) this.pressed.add(k);
-      this.keys.add(k);
-      if ([' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) e.preventDefault();
-    });
-    window.addEventListener('keyup', e => { this.keys.delete(e.key.toLowerCase()); });
-    window.addEventListener('blur', () => { this.keys.clear(); this.mouse.down = false; });
-    if (canvas) {
-      canvas.addEventListener('mousemove', e => {
-        const r = canvas.getBoundingClientRect();
-        this.mouse.x = e.clientX - r.left; this.mouse.y = e.clientY - r.top;
-      });
-      canvas.addEventListener('mousedown', e => { if (e.button === 0) this.mouse.down = true; });
-      window.addEventListener('mouseup', () => { this.mouse.down = false; });
-    }
-  }
-  down(...ks) { return ks.some(k => this.keys.has(k.toLowerCase())); }
-  hit(k) {
-    const key = k.toLowerCase();
-    if (this.pressed.has(key)) { this.pressed.delete(key); return true; }
-    return false;
-  }
-  axis() {
-    let x = 0, y = 0;
-    if (this.down('a', 'arrowleft')) x -= 1;
-    if (this.down('d', 'arrowright')) x += 1;
-    if (this.down('w', 'arrowup')) y -= 1;
-    if (this.down('s', 'arrowdown')) y += 1;
-    return { x, y };
-  }
-  endFrame() { this.pressed.clear(); }
+// input.js — keyboard and mouse state. One job: track held keys, edge
+// presses (consumed once per frame by main), and the mouse in both screen
+// and world coordinates.
+
+export function createInput(canvas) {
+  const I = {
+    keys: new Set(), pressed: new Set(),
+    mouse: { x: 0, y: 0, worldX: 0, worldY: 0, down: false },
+  };
+  window.addEventListener('keydown', e => {
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
+    if (!e.repeat) I.pressed.add(e.code);
+    I.keys.add(e.code);
+  });
+  window.addEventListener('keyup', e => I.keys.delete(e.code));
+  window.addEventListener('blur', () => { I.keys.clear(); I.mouse.down = false; });
+  canvas.addEventListener('mousemove', e => {
+    const r = canvas.getBoundingClientRect();
+    I.mouse.x = (e.clientX - r.left) * (canvas.width / r.width);
+    I.mouse.y = (e.clientY - r.top) * (canvas.height / r.height);
+  });
+  canvas.addEventListener('mousedown', e => { if (e.button === 0) I.mouse.down = true; });
+  window.addEventListener('mouseup', e => { if (e.button === 0) I.mouse.down = false; });
+  canvas.addEventListener('contextmenu', e => e.preventDefault());
+  return I;
+}
+
+// Convert the stored screen mouse into world coordinates for this frame.
+export function updateMouseWorld(I, cam, cw, ch) {
+  const vh = cam.viewW * (ch / cw);
+  I.mouse.worldX = cam.x - cam.viewW / 2 + (I.mouse.x / cw) * cam.viewW;
+  I.mouse.worldY = cam.y - vh / 2 + (I.mouse.y / ch) * vh;
 }

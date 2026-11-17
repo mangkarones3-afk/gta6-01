@@ -1,103 +1,147 @@
-// shots.js — deterministic screenshot staging, driven by ?shot=N.
-// Each frame is composed against the Phase 2 study's rules: the cover
-// is a legible police box-in at named POIs under the tower (F1), the
-// camera sits at the tightened gameplay zoom (F2), the grade is the
-// saturated sunset (F3), signage fills the frame (F4), the minimap is
-// populated (F5) and the HUD shows MISSION n/5 (F6).
-import { makeCar } from './traffic.js';
+// shots.js — deterministic staged scenes for the screenshots. One job:
+// when the page is opened with ?shot=<name>, arrange the live game state
+// into the exact frame the shot needs (the same systems, frozen mid-beat).
+// Nothing here draws or fakes anything — it only places real actors.
 
-export function shotIndex() {
-  const m = /[?&]shot=(\d)/.exec(location.search);
-  return m ? parseInt(m[1], 10) : 0;
+import { say } from './missions.js';
+
+function poi(S, id) { return S.city.pois.find(p => p.id === id); }
+
+function setWanted(S, heat) {
+  S.wanted.heat = heat;
+  S.wanted.stars = heat >= 400 ? 5 : heat >= 280 ? 4 : heat >= 180 ? 3 : heat >= 100 ? 2 : heat >= 40 ? 1 : 0;
+  S.wanted.phase = S.wanted.stars > 0 ? 'pursuit' : 'clear';
+  S.wanted.seenNow = S.wanted.stars > 0;
 }
 
-function pinCamera(game) {
-  const r = game.renderer;
-  const o = game.__camOverride;
-  r.cam.x = o ? o.x : game.player.x; r.cam.z = o ? o.z : game.player.z;
-  r.cam.scale = game.player.onFoot ? 5.6 : 4.6;
-  r.time = 2.4;
+function copAt(S, x, y, angle) {
+  const c = {
+    x, y, angle, v: 0, color: '#eef0f2', roof: '#dfe5ea', kind: 'cop',
+    hp: 130, dead: false, marked: false, driver: 'ai', path: [], pathI: 0,
+    repath: 0, leaving: false, blockPost: false,
+  };
+  S.cars.push(c);
+  return c;
 }
 
-function addPed(game, x, z, shirt) {
-  game.peds.list.push({ id: 900 + game.peds.list.length, x, z, edge: 0, t: 0, dir: 1, side: 1,
-    speed: 0, shirt, state: 'walk', fleeT: 0, phase: 1.3 });
+function heroCar(S, x, y, angle, color) {
+  const c = {
+    x, y, angle, v: 0, color, roof: '#3a2a10', kind: 'parked',
+    hp: 120, dead: false, marked: false, driver: 'player', stolenOnce: true,
+  };
+  S.cars.push(c);
+  S.player.car = c;
+  S.player.x = x; S.player.y = y;
+  return c;
 }
 
-function setMission(game, index, step) {
-  game.missions.index = index;
-  game.missions.state = 'active';
-  game.missions.step = step;
-  game.missions.done = ['m1', 'm2', 'm3', 'm4'].slice(0, index);
-}
-
-export function stageShot(game, n) {
-  const p = game.player, w = game.wanted;
-  document.getElementById('start-screen').style.display = 'none';
-  if (n === 1) {
-    // COVER — the box-in on the downtown arterial (the z=4 road, probed
-    // against the real graph: verticals x=1/98, horizontals z=4/95).
-    // The hero car sits ON the road between Banco del Sol and Cine
-    // Solano; camera (50,9) keeps all four POI signs + the tower's gold
-    // name board clear of the HUD strips (F1/F4/F7).
-    const car = makeCar('muscle', 50, 4, -0.15, '#f59e0b');
-    car.speed = 14;
-    p.car = car; p.onFoot = false; p.x = car.x; p.z = car.z; p.angle = car.angle;
-    w.heat = 300; w.stars = 4; w.state = 'ACTIVE'; w.spotted = true;
-    w.districtName = 'Downtown';
-    // No dispatch ticker in this frame: its bar would sit exactly over
-    // Solano Tower's gold name board at the top of the frame.
-    const facePlayer = (x, z) => Math.atan2(p.z - z, p.x - x);
-    const copA = makeCar('police', 95, 2, facePlayer(95, 2)); copA.speed = 6;
-    const copB = makeCar('police', 100, 42, facePlayer(100, 42)); copB.speed = 6;
-    const copC = makeCar('police', 2, 6, facePlayer(2, 6)); copC.speed = 10;
-    w.cops = [copA, copB, copC];
-    w.roadblock = { x: 152, z: 4, t: 25 };
-    setMission(game, 1, 2); // MISSION 2/5, escaping the bank job's heat
-    game.missions.dialogue = 'Mara: "Clean work in there. Now lose them, Reno."';
-    game.missions.dialogueT = 99;
-    addPed(game, 86, -13, '#2e6da8'); addPed(game, 108, -12, '#e8a317');
-    addPed(game, 60, 84, '#3f8a52');
-    game.traffic.spawnNear(p.x, p.z, 6);
-    game.__camOverride = { x: 50, z: 9 };
-  } else if (n === 2) {
-    // On foot in Palmera Park — the close frame (F2), rivals in view.
-    p.x = 232; p.z = 158; p.angle = 0.5; p.onFoot = true; p.car = null;
-    w.districtName = 'Downtown';
-    setMission(game, 3, 0); // MISSION 4/5
-    game.combat.cityRef = game.city;
-    game.combat.spawnEnemies(268, 128, 2, 'gang');
-    addPed(game, 218, 138, '#e8e4da'); addPed(game, 252, 176, '#b83a2a');
-    addPed(game, 205, 168, '#2c2c34');
-    game.traffic.spawnNear(p.x, p.z, 5);
-  } else if (n === 3) {
-    // Golden hour on the pier — the marina, boats, the bay.
-    p.x = -716; p.z = 156; p.angle = Math.PI; p.onFoot = true; p.car = null;
-    w.districtName = 'Marina';
-    game.missions.index = 4; game.missions.state = 'offer';
-    game.missions.done = ['m1', 'm2', 'm3', 'm4'];
-    addPed(game, -660, 172, '#7a4a96'); addPed(game, -700, 182, '#e8a317');
-    game.traffic.spawnNear(p.x, p.z, 4);
-  } else if (n === 4) {
-    // The boulevard chase — three stars up the beachfront. The
-    // boulevard arterial is at x=-620 (probed); both units sit in its
-    // lanes, right on the player's tail.
-    const car = makeCar('muscle', -620, -95, -Math.PI / 2, '#274b8f');
-    car.speed = 30;
-    p.car = car; p.onFoot = false; p.x = car.x; p.z = car.z; p.angle = car.angle;
-    w.heat = 190; w.stars = 3; w.state = 'ACTIVE'; w.spotted = true;
-    w.districtName = 'Beachfront';
-    w.dispatch = 'Dispatch: suspect fleeing north on the boulevard.';
-    const copA = makeCar('police', -625, -42, -Math.PI / 2); copA.speed = 28;
-    const copB = makeCar('police', -614, -60, -Math.PI / 2); copB.speed = 27;
-    w.cops = [copA, copB];
-    setMission(game, 2, 1); // MISSION 3/5, raising the heat
-    game.traffic.spawnNear(p.x, p.z, 6);
-    addPed(game, -606, -20, '#c97f4a');
-    game.__camOverride = { x: -625, z: -75 };
+// Find the intersection whose surrounding blocks carry the most signage —
+// the cover needs a named, lived-in corner of the city, reasonably close
+// to the mission objective so its distance reads like a real errand.
+function busiestCorner(S) {
+  const mk = poi(S, 'mercado-central');
+  let best = null, bestScore = -1;
+  for (const n of S.city.nodes) {
+    if (n.id >= 225) continue;
+    let score = 0;
+    for (const b of S.city.buildings) {
+      const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+      if (Math.abs(cx - n.x) < 165 && Math.abs(cy - n.y) < 115) {
+        if (b.sign) score += b.poi ? 3 : 2;
+        else score += 0.4;
+      }
+    }
+    if (n.y > 900) score += 1.5;
+    const dJob = Math.hypot(n.x - mk.x, n.y - mk.y);
+    if (dJob > 700) continue; // the errand must read as an errand
+    score -= dJob / 130; // closeness to the job
+    if (score > bestScore) { bestScore = score; best = n; }
   }
-  pinCamera(game);
-  game.renderer.draw(game, 0.016);
-  game.hud.update(game, 0);
-  window.__shotReady = true;
+  return best;
+}
+
+export function applyShot(S, name) {
+  S.mode = 'play';
+  S.frozen = true;
+  S.time = 12.4;
+  const P = S.player;
+  P.cash = 250;
+
+  if (name === 'cover') {
+    const n = busiestCorner(S);
+    heroCar(S, n.x, n.y, 0, '#ffb020');
+    // box-in: one cop west facing east, one east nose-in facing west, one south
+    copAt(S, n.x - 52, n.y - 4, 0);
+    copAt(S, n.x + 58, n.y + 3, Math.PI);
+    copAt(S, n.x + 6, n.y + 56, -Math.PI / 2);
+    S.wanted.roadblocks.push({ x: n.x + 118, y: n.y, angle: Math.PI / 2, until: 1e9 });
+    setWanted(S, 300); // 4 stars
+    const M = S.mission;
+    M.idx = 1; M.name = 'Cobro Pendiente'; M.side = false;
+    const mk = poi(S, 'mercado-central');
+    M.objective = { x: mk.x, y: mk.y, label: 'Go to Mercado Central' };
+    say(S, 'Mara Voss', [
+      'A stallholder at the Mercado owes us and sent muscle instead of money.',
+      'Collect what is ours, Reno. However you need to.',
+    ], 1e9);
+    S.cam.x = n.x + 8; S.cam.y = n.y; S.cam.viewW = 340;
+    S.camLock = { x: n.x + 8, y: n.y, viewW: 340 };
+  } else if (name === 'park') {
+    const pond = S.city.pond;
+    P.car = null;
+    P.x = pond.x - 66; P.y = pond.y + 30; P.aim = 0.4;
+    let placed = 0;
+    for (const p of S.peds) {
+      if (placed >= 2) break;
+      p.hostile = true; p.hp = 46; p.color = '#20242e'; p.dead = false;
+      p.x = pond.x + 30 + placed * 26; p.y = pond.y - 12 + placed * 20;
+      placed++;
+    }
+    let strollers = 0;
+    for (const p of S.peds) {
+      if (strollers >= 3 || p.hostile) continue;
+      p.x = pond.x - 30 + strollers * 34; p.y = pond.y + 62 - strollers * 8;
+      strollers++;
+    }
+    const M = S.mission;
+    M.idx = 3; M.name = 'Palmera Heat'; M.side = false;
+    M.objective = { x: pond.x, y: pond.y, label: 'Cross Palmera Park to the pond' };
+    say(S, 'Mara Voss', ['Rivals in the park, Reno. The pond — get her there.'], 1e9);
+    setWanted(S, 0);
+    S.cam.x = P.x + 16; S.cam.y = P.y; S.cam.viewW = 250;
+    S.camLock = { x: P.x + 16, y: P.y, viewW: 250 };
+  } else if (name === 'marina') {
+    const pier = S.city.pier;
+    P.car = null;
+    P.x = pier.x + 150; P.y = pier.y + 26; P.aim = Math.PI;
+    // two locals stroll the deck so the pier reads lived-in
+    let onDeck = 0;
+    for (const p of S.peds) {
+      if (onDeck >= 2) break;
+      p.x = pier.x + 74 + onDeck * 120; p.y = pier.y + 14 + onDeck * 22;
+      onDeck++;
+    }
+    const M = S.mission;
+    M.idx = 4; M.name = 'The Paloma Run'; M.side = false;
+    const mc = poi(S, 'marina-club');
+    M.objective = { x: mc.x, y: mc.y, label: 'Deliver to Marina Club' };
+    say(S, 'Mara Voss', ['New job, Reno — the last one. A very fast car at Hotel Paloma. Pier drop, then we are square.'], 1e9);
+    setWanted(S, 0);
+    S.cam.x = P.x - 6; S.cam.y = P.y; S.cam.viewW = 330;
+    S.camLock = { x: P.x - 6, y: P.y, viewW: 330 };
+  } else if (name === 'chase') {
+    const x = 8 * 158; // the long Downtown–Mercado avenue
+    heroCar(S, x, 1560, -Math.PI / 2, '#e33f2e');
+    S.player.car.v = 150;
+    copAt(S, x + 2, 1560 + 52, -Math.PI / 2);
+    copAt(S, x - 3, 1560 + 97, -Math.PI / 2);
+    setWanted(S, 226); // 3 stars
+    S.dispatch = { text: 'ALL UNITS — RED COUPE NORTHBOUND, DO NOT LOSE IT', until: 1e9 };
+    const M = S.mission;
+    M.idx = 2; M.name = 'Hot Pickup'; M.side = false;
+    M.objective = { x, y: 1560 - 400, label: 'Lose the SBPD' };
+    S.cam.x = x; S.cam.y = 1560 + 6; S.cam.viewW = 330;
+    S.camLock = { x, y: 1560 + 6, viewW: 330 };
+  }
+  S.districtName = S.districtAt(S.player.x, S.player.y);
 }

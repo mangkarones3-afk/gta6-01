@@ -1,86 +1,89 @@
-// config.js — every tunable in one place. Solano Bay: an original
-// sun-soaked coastal city at golden hour. Units are metres; the world
-// origin is the city centre, the bay lies to the west.
-export const SEED = 20261117;
-export const WORLD = { half: 800, waterX: -640 }; // bay water west of waterX
-export const ROAD_PITCH = 100;
-export const LANE_W = 3.4;
+// config.js — world geometry, districts, POIs and tuning for Solano Bay.
+// One job: hold every constant the other modules agree on.
 
-// District palettes are saturated on purpose: dusk-warm walls, deep
-// roofs. The first build's washed pastel (mean cover brightness 142)
-// is the failure this palette answers — target ~105-125.
+// ---- world geometry (units are world pixels at zoom 1) ----
+export const ROAD_W = 30;            // road width
+export const BLOCK = 128;            // block interior size
+export const PITCH = BLOCK + ROAD_W; // 158 — node spacing
+export const COLS = 15;              // road nodes across
+export const ROWS = 15;              // road nodes down
+export const WORLD_W = (COLS - 1) * PITCH;
+export const WORLD_H = (ROWS - 1) * PITCH;
+export const BAY_X = -70;            // water starts west of this x
+export const PIER_Y_ROW = 7;         // grid row the marina pier extends from
+export const PIER_LEN = 500;         // pier deck length into the bay
+export const CITY_SEED = 20261117;   // fixed: the city is the same every load
+
+// ---- districts: name, tint for minimap/ground, building palette ----
+// Rectangles are in block coordinates (bx 0..13, by 0..13).
 export const DISTRICTS = [
-  { id: 'downtown', name: 'Downtown', cx: 0, cz: 0, r: 300, hMin: 26, hMax: 95,
-    palette: ['#3e6f9e', '#c96f4a', '#e3d3ae', '#4f8577'], roof: '#2e3d4d', sig: 'tower' },
-  { id: 'marina', name: 'Marina', cx: -560, cz: 0, r: 260, hMin: 8, hMax: 24,
-    palette: ['#e2725b', '#f2ead8', '#2e8b9a', '#e8a13c'], roof: '#9a4632', sig: 'palms' },
-  { id: 'oldtown', name: 'Old Town', cx: -120, cz: -520, r: 260, hMin: 6, hMax: 14,
-    palette: ['#c96f3f', '#d9a441', '#a84f35', '#e0c084'], roof: '#7a3b26', sig: 'clocktower' },
-  { id: 'hillside', name: 'Hillside', cx: 560, cz: -120, r: 280, hMin: 5, hMax: 9,
-    palette: ['#d9b77c', '#a8a05a', '#c98a5a', '#8a9a5b'], roof: '#5f4630', sig: 'trees' },
-  { id: 'harbor', name: 'Harbor', cx: 480, cz: 560, r: 280, hMin: 8, hMax: 15,
-    palette: ['#9a4f3a', '#5f7184', '#7a6a58', '#b0714f'], roof: '#3c4148', sig: 'cranes' },
-  { id: 'midtown', name: 'Midtown', cx: 0, cz: 0, r: 900, hMin: 12, hMax: 32,
-    palette: ['#cf9457', '#b85c48', '#5f8f7a', '#e0cda3'], roof: '#54453a', sig: 'market' },
+  { id: 'marina',  name: 'Marina',       bx0: 0,  by0: 5,  bx1: 3,  by1: 9,  ground: '#8d7a5e', tint: '#2e7f86' },
+  { id: 'playa',   name: 'Playa',        bx0: 0,  by0: 10, bx1: 5,  by1: 13, ground: '#99835f', tint: '#d9a441' },
+  { id: 'downtown',name: 'Downtown',     bx0: 6,  by0: 5,  bx1: 9,  by1: 9,  ground: '#7f6f5a', tint: '#b5523c' },
+  { id: 'mercado', name: 'Mercado',      bx0: 6,  by0: 10, bx1: 10, by1: 13, ground: '#8a7050', tint: '#c96f4a' },
+  { id: 'palmera', name: 'Palmera Park', bx0: 10, by0: 1,  bx1: 13, by1: 4,  ground: '#6b7f50', tint: '#4d8f4a' },
+  { id: 'alto',    name: 'Alto',         bx0: 11, by0: 5,  bx1: 13, by1: 13, ground: '#847052', tint: '#7a5fa0' },
 ];
 
-export const LANDMARKS = [
-  { id: 'solano-tower', name: 'Solano Tower', district: 'downtown', x: 60, z: -40, h: 120 },
-  { id: 'clock-tower', name: 'Old Clock Tower', district: 'oldtown', x: -140, z: -560, h: 46 },
-  { id: 'harbor-cranes', name: 'Harbor Cranes', district: 'harbor', x: 560, z: 660, h: 60 },
-  { id: 'observatory', name: 'Hillside Observatory', district: 'hillside', x: 660, z: -260, h: 26 },
-  { id: 'market-hall', name: 'Market Hall', district: 'midtown', x: -260, z: 360, h: 18 },
-];
+// Park blocks (no buildings): pond + palms, inside Palmera Park district.
+export const PARK_BLOCKS = [ { bx: 10, by: 2 }, { bx: 11, by: 2 }, { bx: 10, by: 3 }, { bx: 11, by: 3 } ];
 
-// Named businesses. city.js pins each POI to the building nearest its
-// anchor; render.js paints the sign on that building's street face.
-// The first four anchors all fall inside the cover frame (F4).
+// ---- points of interest: name, district, block + lot to occupy ----
+// lot: 0=NW 1=NE 2=SW 3=SE inside the block.
 export const POIS = [
-  { name: 'BANCO DEL SOL', x: 30, z: 60, sign: '#1d3a5f' },
-  { name: 'HOTEL PALOMA', x: 0, z: -80, sign: '#7a2e4f' },
-  { name: 'CINE SOLANO', x: 150, z: 45, sign: '#8a2323' },
-  { name: 'TALLER VOSS', x: -300, z: 300, sign: '#20503c' },
-  { name: 'MERCADO CENTRAL', x: -260, z: 360, sign: '#96600f' },
-  { name: 'CAFÉ LUMEN', x: -60, z: -420, sign: '#5f4630' },
-  { name: 'IRON PALMS GYM', x: 160, z: 240, sign: '#37455a' },
-  { name: 'FARMACIA SOL', x: 180, z: -160, sign: '#1f6a4a' },
-  { name: 'CLUB VELERO', x: -520, z: 60, sign: '#4a2a6a' },
-  { name: 'PUERTO BAR', x: 420, z: 480, sign: '#6a3a1f' },
+  { id: 'mercado-central', name: 'Mercado Central', bx: 8,  by: 11, lot: 0, color: '#c9542e' },
+  { id: 'banco-del-sol',   name: 'Banco del Sol',   bx: 7,  by: 6,  lot: 1, color: '#2e7f86' },
+  { id: 'hotel-paloma',    name: 'Hotel Paloma',    bx: 2,  by: 12, lot: 1, color: '#e8c07a' },
+  { id: 'cine-solano',     name: 'Cine Solano',     bx: 9,  by: 12, lot: 2, color: '#8a3b5c' },
+  { id: 'taller-brisa',    name: 'Taller Brisa',    bx: 12, by: 8,  lot: 0, color: '#5c7a3a' },
+  { id: 'farmacia-luz',    name: 'Farmacia Luz',    bx: 8,  by: 7,  lot: 3, color: '#e6e2d5' },
+  { id: 'marina-club',     name: 'Marina Club',     bx: 1,  by: 6,  lot: 2, color: '#20606e' },
+  { id: 'sbpd-central',    name: 'SBPD Central',    bx: 6,  by: 5,  lot: 0, color: '#3a4a6b' },
+  { id: 'mirador-cafe',    name: 'Mirador Café',    bx: 12, by: 1,  lot: 3, color: '#d9905f' },
+  { id: 'almacen-gris',    name: 'Almacén Gris',    bx: 2,  by: 9,  lot: 3, color: '#6b6f75' },
 ];
 
-export const WANTED = {
-  thresholds: [0, 40, 100, 180, 280, 400], // heat at 1..5 stars
-  heatMax: 500, decay: 8, loseSightDelay: 4,
-  caps: [0, 2, 3, 5, 7, 9], footCaps: [0, 0, 2, 4, 6, 8],
-  spawnInterval: [0, 6, 5, 4, 3, 2.5], searchTime: [0, 20, 30, 45, 60, 80],
-  searchRadiusCap: [0, 80, 100, 120, 140, 160], copSpeed: [0, 0.98, 1.0, 1.02, 1.04, 1.06],
-  crimes: { theft: 25, collision: 8, gunshot: 15, pedHit: 30, pedKill: 60, copRam: 50, explosion: 80, officerKill: 120 },
+// Generic shop signs for commercial lots (drawn on the building face).
+export const SHOP_SIGNS = [
+  'PANADERIA', 'JOYERIA LUZ', 'CAFE AZAHAR', 'LICORES MAR', 'BAR LA OLA',
+  'TAPAS SOL', 'FLORERIA', 'PELUQUERIA', 'FERRETERIA', 'LIBRERIA SOL',
+  'CARNICERIA', 'HELADERIA', 'TINTORERIA', 'ZAPATERIA', 'OPTICA MAR',
+];
+
+// Building wall palettes per district (saturated sunset tones).
+export const WALLS = {
+  marina:   ['#2e7f86', '#3f959b', '#c96f4a', '#e0b96f'],
+  playa:    ['#e8c07a', '#d9905f', '#e6e2d5', '#c96f4a'],
+  downtown: ['#b5523c', '#c96f4a', '#2e7f86', '#8a3b5c', '#d9905f'],
+  mercado:  ['#c9542e', '#d9905f', '#c96f4a', '#e8c07a', '#7a9a3a'],
+  palmera:  ['#7a9a3a', '#e8c07a', '#d9905f', '#3f959b'],
+  alto:     ['#9a7ab5', '#c96f4a', '#e0b96f', '#5c7a3a'],
 };
 
-export const CARS = {
-  sedan:   { name: 'Vireo Sedan',   top: 42, accel: 8.5, brake: 10, grip: 10, color: '#b83a2a' },
-  sports:  { name: 'Kestrel GT',    top: 55, accel: 11.5, brake: 12, grip: 11, color: '#e8a317' },
-  taxi:    { name: 'Bay Cab',       top: 40, accel: 7.5, brake: 10, grip: 10, color: '#e8c93d' },
-  truck:   { name: 'Hauler',        top: 34, accel: 6, brake: 8, grip: 9, color: '#5f7184' },
-  police:  { name: 'SBPD Interceptor', top: 52, accel: 11, brake: 12, grip: 11, color: '#274b8f' },
-  van:     { name: 'Courier Van',   top: 38, accel: 7, brake: 9, grip: 9, color: '#8a6f4d' },
-};
+// ---- player / vehicle tuning ----
+export const WALK_SPEED = 92;         // units/s on foot
+export const SPRINT_MULT = 1.55;
+export const PLAYER_R = 6;            // collision radius
+export const CAR_R = 9;
+export const CAR_LEN = 17, CAR_WID = 9;
+export const CAR_ACCEL = 130, CAR_MAXV = 235, CAR_REVERSE = 80;
+export const CAR_TURN = 2.6;          // rad/s at speed
 
-export const WEAPONS = {
-  pistol: { name: 'P9 Pistol', damage: 34, rate: 0.22, range: 260, spread: 0.05, mag: 12, reload: 1.1, auto: false },
-  smg:    { name: 'Vex SMG', damage: 18, rate: 0.09, range: 200, spread: 0.11, mag: 30, reload: 1.4, auto: true },
-  shotgun:{ name: 'Boar-12', damage: 22, rate: 0.8, range: 120, spread: 0.22, mag: 6, reload: 2.0, auto: false, pellets: 6 },
-};
+// ---- wanted model ----
+export const HEAT_MAX = 500;
+export const STAR_THRESHOLDS = [40, 100, 180, 280, 400]; // heat at 1..5 stars
+export const HEAT_DECAY_UNSEEN = 9;   // heat/s while police have no eyes on you
+export const COPS_PER_STAR = 2;       // active pursuers ≈ stars * this (capped)
+export const COP_MAX = 9;
 
-export const PLAYER = {
-  walkSpeed: 5.2, sprintSpeed: 7.4, hp: 100, radius: 6,
-  carEnterRange: 26, pickupRange: 22,
-};
+// ---- weapons ----
+export const WEAPONS = [
+  { id: 'fists',  name: 'FISTS',  mag: Infinity, damage: 12, rate: 0.34, range: 20,  speed: 0,    auto: false },
+  { id: 'pistol', name: 'PISTOL', mag: 12,       damage: 26, rate: 0.26, range: 340, speed: 720,  auto: false },
+  { id: 'smg',    name: 'SMG',    mag: 30,       damage: 17, rate: 0.09, range: 300, speed: 780,  auto: true },
+];
 
-export const TRAFFIC = { cars: 26, peds: 42, carSpeed: [9, 16], despawnR: 420, spawnR: 320 };
-
-export const STORY = {
-  hero: 'Reno Kade', contact: 'Mara Voss', crew: 'the Bay Rats',
-  intro: 'Reno Kade came back to Solano Bay with a stolen sports car, a debt to the Harbor Kings, and one friend left: Mara Voss, who runs a garage on Canal Street and a plan to take the bay back.',
-  pitch: 'Five jobs. One debt. Take the bay back.',
-};
+// ---- camera ----
+export const VIEW_FOOT = 250;   // view width in units on foot
+export const VIEW_DRIVE = 330;  // view width in units while driving
+export const VIEW_SHOT = 300;   // view width for staged screenshots

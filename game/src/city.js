@@ -1,258 +1,202 @@
-// city.js — Solano Bay as one plain-data object (CityData contract).
-// Roads first, districts before streets, blocks from the grid,
-// buildings and props by rule. Traffic, police, the minimap and the
-// missions all read this same object — nothing keeps a private map.
-import { SEED, WORLD, ROAD_PITCH, DISTRICTS, LANDMARKS, POIS } from './config.js';
-import { streamFor, pick, range, clamp } from './rng.js';
+// city.js — procedural generation of Solano Bay. One job: turn the seed into
+// the road graph, buildings, POIs, park and pier, and answer collision and
+// routing questions about them. No rendering, no gameplay state.
 
-export function districtAt(x, z) {
-  if (x < WORLD.waterX + 140) return 'marina';
-  if (z > 420 && x > 220) return 'harbor';
-  if (z < -360 && x > -520 && x < 260) return 'oldtown';
-  if (x > 430) return 'hillside';
-  if (Math.abs(x) < 260 && Math.abs(z) < 260) return 'downtown';
-  return 'midtown';
+import {
+  ROAD_W, BLOCK, PITCH, COLS, ROWS, WORLD_W, WORLD_H, BAY_X, PIER_Y_ROW,
+  PIER_LEN, CITY_SEED, DISTRICTS, PARK_BLOCKS, POIS, SHOP_SIGNS, WALLS,
+} from './config.js';
+import { stream, range, rangeInt, pick, chance } from './rng.js';
+
+// Lots per block side: the commercial districts (Downtown, Mercado) are
+// built fine-grained (3x3 small shopfronts — the signage the city is read
+// by), the rest of the city keeps larger 2x2 lots.
+function lotsPerSide(district) { return (district.id === 'downtown' || district.id === 'mercado') ? 3 : 2; }
+// POI lot indices are written for the 2x2 scheme (0=NW 1=NE 2=SW 3=SE);
+// translate corner lots into the 3x3 scheme.
+function translateLot(lot, lps) { return lps === 2 ? lot : [0, 2, 6, 8][lot]; }
+
+export function districtOfBlock(bx, by) {
+  for (const d of DISTRICTS) if (bx >= d.bx0 && bx <= d.bx1 && by >= d.by0 && by <= d.by1) return d;
+  // fall back to the nearest district rectangle centre
+  let best = DISTRICTS[0], bd = 1e9;
+  for (const d of DISTRICTS) {
+    const cx = (d.bx0 + d.bx1) / 2, cy = (d.by0 + d.by1) / 2;
+    const dist = (cx - bx) * (cx - bx) + (cy - by) * (cy - by);
+    if (dist < bd) { bd = dist; best = d; }
+  }
+  return best;
 }
-export function districtDef(id) { return DISTRICTS.find(d => d.id === id) || DISTRICTS[5]; }
 
-export function generateCity() {
-  const rngRoads = streamFor(SEED, 'roads');
-  const rngBuild = streamFor(SEED, 'buildings');
-  const rngProps = streamFor(SEED, 'props');
-  const half = WORLD.half;
+function isParkBlock(bx, by) { return PARK_BLOCKS.some(p => p.bx === bx && p.by === by); }
 
-  // --- road lines (perturbed grid, one jitter per line) ---
-  const xs = [], zs = [];
-  for (let x = -700; x <= 700; x += ROAD_PITCH) xs.push(x + range(rngRoads, -8, 8));
-  for (let z = -700; z <= 700; z += ROAD_PITCH) zs.push(z + range(rngRoads, -8, 8));
+export function buildCity() {
+  const rng = stream(CITY_SEED, 'city');
 
-  const nodes = [], nodeByKey = new Map();
-  function nodeAt(x, z) {
-    const k = Math.round(x) + ',' + Math.round(z);
-    if (nodeByKey.has(k)) return nodeByKey.get(k);
+  // ---- road graph: grid intersections + a line of pier nodes ----
+  const nodes = [];
+  const nodeId = (i, j) => j * COLS + i;
+  for (let j = 0; j < ROWS; j++)
+    for (let i = 0; i < COLS; i++)
+      nodes.push({ id: nodeId(i, j), x: i * PITCH, y: j * PITCH, next: [] });
+  const pierY = PIER_Y_ROW * PITCH;
+  const pierNodeIds = [];
+  for (let k = 1; k <= 5; k++) {
     const id = nodes.length;
-    const n = { id, x, z, edges: [], signalised: false, deadEnd: false };
-    nodes.push(n); nodeByKey.set(k, id); return id;
+    nodes.push({ id, x: BAY_X - (PIER_LEN / 5) * k + 40, y: pierY, next: [] });
+    pierNodeIds.push(id);
   }
   const edges = [];
-  function addEdge(ax, az, bx, bz, cls) {
-    const a = nodeAt(ax, az), b = nodeAt(bx, bz);
-    if (a === b) return;
-    const id = edges.length;
-    const dx = bx - ax, dz = bz - az, len = Math.hypot(dx, dz);
-    const lanes = cls === 'ring' ? 3 : cls === 'arterial' ? 2 : 1;
-    const halfW = cls === 'ring' ? 10.5 : cls === 'arterial' ? 7.2 : cls === 'collector' ? 5 : 3.8;
-    const e = { id, a, b, pts: [[ax, az], [bx, bz]], cls, lanesF: lanes, lanesB: lanes,
-      halfW, parking: cls !== 'ring', drivable: true, district: districtAt((ax + bx) / 2, (az + bz) / 2),
-      len, speed: cls === 'ring' ? 27 : cls === 'arterial' ? 17 : cls === 'collector' ? 13 : 10 };
-    edges.push(e); nodes[a].edges.push(id); nodes[b].edges.push(id);
-    return e;
-  }
-  // verticals + horizontals (skip segments over the bay, x < waterX)
-  for (const x of xs) {
-    for (let i = 0; i < zs.length - 1; i++) {
-      if (x < WORLD.waterX + 20) continue;
-      addEdge(x, zs[i], x, zs[i + 1], Math.abs(x) < 300 ? 'arterial' : 'collector');
+  const link = (a, b) => { edges.push({ a, b }); nodes[a].next.push(b); nodes[b].next.push(a); };
+  for (let j = 0; j < ROWS; j++)
+    for (let i = 0; i < COLS; i++) {
+      if (i + 1 < COLS) link(nodeId(i, j), nodeId(i + 1, j));
+      if (j + 1 < ROWS) link(nodeId(i, j), nodeId(i, j + 1));
     }
-  }
-  for (const z of zs) {
-    for (let i = 0; i < xs.length - 1; i++) {
-      if (xs[i] < WORLD.waterX + 20 && xs[i + 1] < WORLD.waterX + 20) continue;
-      addEdge(xs[i], z, xs[i + 1], z, Math.abs(z) < 300 ? 'arterial' : 'collector');
-    }
-  }
-  // ring road (outer rectangle) + beachfront boulevard along the water
-  const R = 700;
-  addEdge(-R, -R, R, -R, 'ring'); addEdge(R, -R, R, R, 'ring');
-  addEdge(R, R, -R, R, 'ring'); addEdge(-R, R, -R, -R, 'ring');
-  addEdge(WORLD.waterX + 20, -R, WORLD.waterX + 20, R, 'arterial');
-  // one-way pairs downtown: two parallel locals, mirrored directions
-  for (const e of edges) {
-    if (e.district === 'downtown' && e.cls === 'collector' && Math.abs(e.pts[0][0] - e.pts[1][0]) < 1) {
-      if (Math.round(e.pts[0][0]) % 200 < 100) { e.lanesB = 0; e.lanesF = 2; }
-    }
-  }
-  for (const n of nodes) {
-    n.signalised = n.edges.some(id => edges[id].cls === 'arterial') &&
-      n.edges.filter(id => edges[id].cls === 'arterial').length >= 2;
-  }
+  link(nodeId(0, PIER_Y_ROW), pierNodeIds[0]);
+  for (let k = 0; k + 1 < pierNodeIds.length; k++) link(pierNodeIds[k], pierNodeIds[k + 1]);
 
-  // --- blocks (grid cells between streets), parcels, buildings ---
-  const blocks = [], buildings = [], props = [];
-  let bid = 0, palmeraPlaced = false;
-  for (let i = 0; i < xs.length - 1; i++) {
-    for (let j = 0; j < zs.length - 1; j++) {
-      const x0 = xs[i] + 11, x1 = xs[i + 1] - 11, z0 = zs[j] + 11, z1 = zs[j + 1] - 11;
-      if (x1 - x0 < 24 || z1 - z0 < 24) continue;
-      const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
-      if (cx < WORLD.waterX + 30) continue; // bay
-      const district = districtAt(cx, cz);
-      const def = districtDef(district);
-      const block = { id: blocks.length, poly: [[x0, z0], [x1, z0], [x1, z1], [x0, z1]], district, cx, cz };
-      blocks.push(block);
-      // Palmera Park: one named park with a pond, planted on the block
-      // nearest its anchor so a green landmark breaks the Midtown grid.
-      if (!palmeraPlaced && Math.hypot(cx - 240, cz - 200) < 60) {
-        palmeraPlaced = true;
-        props.push({ id: props.length, type: 'park', name: 'Palmera Park', pond: true, x: cx, z: cz, w: x1 - x0, d: z1 - z0 });
-        continue;
-      }
-      // unnamed park every ~14th block in residential districts
-      if ((district === 'hillside' || district === 'midtown') && rngBuild() < 0.07) {
-        props.push({ id: props.length, type: 'park', x: cx, z: cz, w: x1 - x0, d: z1 - z0 });
-        continue;
-      }
-      const nB = district === 'downtown' ? 1 : district === 'harbor' ? 1 : rngBuild() < 0.5 ? 2 : 4;
-      const cols = nB === 1 ? 1 : 2, rows = nB <= 2 ? 1 : 2;
-      for (let c = 0; c < cols; c++) for (let r = 0; r < rows; r++) {
-        const w = (x1 - x0) / cols - 8, d = (z1 - z0) / rows - 8;
-        const bx = x0 + 4 + (w + 8) * c + w / 2, bz = z0 + 4 + (d + 8) * r + d / 2;
-        // landmark parcels are reserved: a regular building whose
-        // footprint would swallow a landmark is never placed.
-        if (LANDMARKS.some(lm => Math.abs(bx - lm.x) < w / 2 + 23 && Math.abs(bz - lm.z) < d / 2 + 23)) continue;
-        const t = clamp(1 - Math.hypot(bx - def.cx, bz - def.cz) / def.r, 0, 1);
-        const h = def.hMin + (def.hMax - def.hMin) * Math.pow(t, 1.4) * (0.75 + 0.5 * rngBuild());
-        buildings.push({ id: bid++, x: bx, z: bz, rotY: 0, w, d, h: Math.round(h),
-          archetype: h < 10 ? 'house' : h < 25 ? 'slab' : 'tower',
-          tint: pick(rngBuild, def.palette), roof: def.roof, district, landmark: false, poi: null });
+  // ---- buildings: 2x2 lots per block, POIs pinned to their lots ----
+  const buildings = [];
+  const poiByLot = new Map();
+  for (const p of POIS) {
+    const d = districtOfBlock(p.bx, p.by);
+    poiByLot.set(p.bx + ',' + p.by + ',' + translateLot(p.lot, lotsPerSide(d)), p);
+  }
+  const poiOut = [];
+  for (let by = 0; by < ROWS - 1; by++) {
+    for (let bx = 0; bx < COLS - 1; bx++) {
+      if (isParkBlock(bx, by)) continue;
+      const district = districtOfBlock(bx, by);
+      const lps = lotsPerSide(district), LOT = BLOCK / lps;
+      const x0 = bx * PITCH + ROAD_W / 2, y0 = by * PITCH + ROAD_W / 2;
+      for (let lot = 0; lot < lps * lps; lot++) {
+        const lx = x0 + (lot % lps) * LOT, ly = y0 + Math.floor(lot / lps) * LOT;
+        const poi = poiByLot.get(bx + ',' + by + ',' + lot);
+        if (!poi && !chance(rng, 0.66)) continue; // empty lot: parking / plaza
+        const pad = poi ? 2 : range(rng, 2, 6);
+        const w = LOT - pad * 2, h = LOT - pad * 2;
+        const tall = district.id === 'downtown' ? rangeInt(rng, 4, 8) : rangeInt(rng, 1, 3);
+        const b = {
+          x: lx + pad, y: ly + pad, w, h,
+          color: poi ? poi.color : pick(rng, WALLS[district.id]),
+          floors: tall, district: district.id,
+          sign: poi ? poi.name.toUpperCase() : (chance(rng, 0.6) ? pick(rng, SHOP_SIGNS) : null),
+          poi: poi ? poi.id : null,
+        };
+        buildings.push(b);
+        if (poi) poiOut.push({ ...poi, x: b.x + b.w / 2, y: b.y + b.h / 2, building: b });
       }
     }
   }
-  // landmarks: tall unique buildings on reserved parcels
-  for (const lm of LANDMARKS) {
-    const def = districtDef(lm.district);
-    buildings.push({ id: bid++, x: lm.x, z: lm.z, rotY: 0, w: 34, d: 34, h: lm.h,
-      archetype: 'landmark', tint: pick(rngBuild, def.palette), roof: def.roof,
-      district: lm.district, landmark: true, name: lm.name, poi: null });
-  }
-  const landmarks = LANDMARKS.map((lm, i) => ({ id: i, name: lm.name, x: lm.x, z: lm.z, district: lm.district }));
-  // POIs: pin each named business to the ordinary building nearest its
-  // anchor — the sign painter in render.js does the rest.
-  for (const poi of POIS) {
-    let best = null, bd = 1e18;
-    for (const b of buildings) {
-      if (b.landmark) continue;
-      const d = (b.x - poi.x) ** 2 + (b.z - poi.z) ** 2;
-      if (d < bd) { bd = d; best = b; }
-    }
-    if (best && bd < 110 * 110) best.poi = { name: poi.name, sign: poi.sign };
-  }
-  const pois = buildings.filter(b => b.poi).map(b => ({ name: b.poi.name, x: b.x, z: b.z, district: b.district }));
 
-  // --- the Marina Pier: a deck reaching into the bay, boats alongside,
-  // and the boardwalk strip where the beach meets the boulevard ---
-  props.push({ id: props.length, type: 'pier', x: -706, z: 160, w: 132, d: 46 });
-  props.push({ id: props.length, type: 'boardwalk', x: WORLD.waterX + 8, z: 40, w: 16, d: 760 });
-  const boatCols = ['#e2725b', '#f2ead8', '#2e8b9a', '#e8a13c', '#b83a2a'];
-  const boatSpots = [[-700, 96], [-742, 226], [-676, 250], [-716, -60], [-688, -180], [-748, 40]];
-  boatSpots.forEach(([bx, bz], i) => {
-    props.push({ id: props.length, type: 'boat', x: bx, z: bz, angle: range(rngProps, -0.4, 0.4), color: boatCols[i % boatCols.length] });
-  });
-
-  // --- props by rule: palms on the marina, trees in hillside, lights on arterials ---
-  for (const e of edges) {
-    if (e.cls === 'arterial') {
-      const n = Math.floor(e.len / 26);
-      for (let k = 0; k < n; k++) {
-        const t = (k + 0.5) / n;
-        const px = e.pts[0][0] + (e.pts[1][0] - e.pts[0][0]) * t;
-        const pz = e.pts[0][1] + (e.pts[1][1] - e.pts[0][1]) * t;
-        props.push({ id: props.length, type: 'light', x: px + (e.pts[0][0] === e.pts[1][0] ? 9 : 0), z: pz + (e.pts[0][1] === e.pts[1][1] ? 9 : 0) });
-      }
-    }
-    if (e.district === 'marina' && Math.abs(e.pts[0][0] - e.pts[1][0]) < 1) {
-      const n = Math.floor(e.len / 12);
-      for (let k = 0; k < n; k++) {
-        const t = (k + 0.5) / n;
-        props.push({ id: props.length, type: 'palm', x: e.pts[0][0] - 12, z: e.pts[0][1] + (e.pts[1][1] - e.pts[0][1]) * t });
-      }
-    }
-    if (e.district === 'hillside' && rngProps() < 0.6) {
-      props.push({ id: props.length, type: 'tree', x: (e.pts[0][0] + e.pts[1][0]) / 2 + range(rngProps, -14, 14), z: (e.pts[0][1] + e.pts[1][1]) / 2 + range(rngProps, -14, 14) });
-    }
+  // ---- Palmera Park: pond ellipse + a ring and scatter of palms ----
+  const parkRect = {
+    x: 10 * PITCH + ROAD_W / 2, y: 2 * PITCH + ROAD_W / 2,
+    w: 2 * PITCH - ROAD_W, h: 2 * PITCH - ROAD_W,
+  };
+  const pond = { x: parkRect.x + parkRect.w * 0.5, y: parkRect.y + parkRect.h * 0.46, rx: 62, ry: 40 };
+  const palms = [];
+  for (let k = 0; k < 14; k++) {
+    const a = (k / 14) * Math.PI * 2;
+    palms.push({ x: pond.x + Math.cos(a) * (pond.rx + 22), y: pond.y + Math.sin(a) * (pond.ry + 18), s: range(rng, 0.85, 1.2) });
   }
-  // parked cars along parking edges
-  const parked = [];
-  for (const e of edges) {
-    if (!e.parking || rngProps() > 0.5) continue;
-    const n = Math.floor(e.len / 30);
-    for (let k = 0; k < n; k++) {
-      const t = (k + 0.5) / n;
-      const px = e.pts[0][0] + (e.pts[1][0] - e.pts[0][0]) * t;
-      const pz = e.pts[0][1] + (e.pts[1][1] - e.pts[0][1]) * t;
-      parked.push({ x: px, z: pz, angle: Math.atan2(e.pts[1][1] - e.pts[0][1], e.pts[1][0] - e.pts[0][0]), kind: pick(rngProps, ['sedan', 'sedan', 'sports', 'van', 'taxi']) });
-    }
-  }
+  for (let k = 0; k < 16; k++)
+    palms.push({ x: range(rng, parkRect.x + 16, parkRect.x + parkRect.w - 16), y: range(rng, parkRect.y + 16, parkRect.y + parkRect.h - 16), s: range(rng, 0.8, 1.25) });
 
-  // --- anchors: mission/spawn points on the graph ---
-  const anchors = [];
-  function anchor(kind, x, z) {
-    let best = null, bd = 1e18;
-    for (const n of nodes) { const d = (n.x - x) ** 2 + (n.z - z) ** 2; if (d < bd) { bd = d; best = n; } }
-    anchors.push({ id: anchors.length, kind, node: best.id, x: best.x, z: best.z, district: districtAt(best.x, best.z) });
+  // ---- Marina pier: deck, moored boats, lighthouse ----
+  const pier = { x: BAY_X - PIER_LEN + 40, y: pierY - 26, w: PIER_LEN, h: 52 };
+  const boats = [];
+  for (let k = 0; k < 12; k++) {
+    const side = k % 2 === 0 ? -1 : 1;
+    boats.push({
+      x: pier.x + 30 + Math.floor(k / 2) * 78 + range(rng, -6, 6),
+      y: pierY + side * (52 + range(rng, 4, 16)),
+      w: range(rng, 23, 33), h: 11, color: pick(rng, ['#e6e2d5', '#c9542e', '#2e7f86', '#e8c07a']),
+    });
   }
-  anchor('safehouse', -300, 300); anchor('garage', -300, 300);
-  anchor('landmarkFront', 60, -40); anchor('landmarkFront', -700, 160);
-  anchor('landmarkFront', -140, -560); anchor('landmarkFront', 560, 660);
-  anchor('storefront', -260, 360); anchor('storefront', 60, 160);
-  anchor('warehouseDoor', 560, 560); anchor('alleyMid', -60, -460);
-  anchor('pierEnd', -720, 160); anchor('parkingLot', 260, -60);
+  const lighthouse = { x: pier.x + 14, y: pierY, r: 15 };
 
-  return { seed: SEED, version: 1, districts: DISTRICTS, nodes, edges, blocks,
-    buildings, props, landmarks, anchors, parked, pois };
+  const spawn = { x: 2 * PITCH + 40, y: 12 * PITCH + 30 }; // Playa, near Hotel Paloma
+
+  return {
+    nodes, edges, buildings, pois: poiOut, parkRect, pond, palms, pier, boats, lighthouse, spawn,
+    w: WORLD_W, h: WORLD_H,
+  };
 }
 
-// Nearest node / edge helpers shared by traffic, police and missions.
-export function nearestNode(city, x, z) {
-  let best = city.nodes[0], bd = 1e18;
-  for (const n of city.nodes) { const d = (n.x - x) ** 2 + (n.z - z) ** 2; if (d < bd) { bd = d; best = n; } }
-  return best;
-}
-export function nearestEdge(city, x, z) {
-  let best = null, bd = 1e18;
-  for (const e of city.edges) {
-    if (!e.drivable) continue;
-    const [ax, az] = e.pts[0], [bx, bz] = e.pts[1];
-    const dx = bx - ax, dz = bz - az, l2 = dx * dx + dz * dz || 1;
-    let t = ((x - ax) * dx + (z - az) * dz) / l2; t = clamp(t, 0, 1);
-    const px = ax + dx * t, pz = az + dz * t, d = (x - px) ** 2 + (z - pz) ** 2;
-    if (d < bd) { bd = d; best = e; }
+// ---- collision: circle vs building AABBs + water (pier deck is walkable) ----
+export function collide(city, pos, r) {
+  // water west of the bay line, unless standing on the pier deck
+  const onPier = pos.x > city.pier.x - 4 && pos.x < BAY_X + 12 && Math.abs(pos.y - (city.pier.y + 26)) < 30;
+  if (pos.x - r < BAY_X && !onPier) pos.x = BAY_X + r;
+  if (pos.x < city.pier.x + 10 && !onPier && pos.y > city.pier.y - 60 && pos.y < city.pier.y + 112) {
+    // open water beside the pier
+    if (pos.x - r < BAY_X) pos.x = BAY_X + r;
   }
-  return best;
-}
-// BFS route over the directed graph (one-way edges respected).
-export function route(city, fromId, toId) {
-  if (fromId === toId) return [fromId];
-  const prev = new Map([[fromId, -1]]); const q = [fromId];
-  while (q.length) {
-    const cur = q.shift();
-    for (const eid of city.nodes[cur].edges) {
-      const e = city.edges[eid];
-      let nxt = -1;
-      if (e.a === cur && e.lanesF > 0) nxt = e.b;
-      else if (e.b === cur && e.lanesB > 0) nxt = e.a;
-      if (nxt < 0 || prev.has(nxt)) continue;
-      prev.set(nxt, cur);
-      if (nxt === toId) { const path = [toId]; let p = toId; while (prev.get(p) >= 0) { p = prev.get(p); path.unshift(p); } return path; }
-      q.push(nxt);
-    }
-  }
-  return null;
-}
-// Building whose footprint (grown by pad) contains the point, or null.
-export function buildingAt(city, x, z, pad) {
-  const p = pad === undefined ? 2 : pad;
   for (const b of city.buildings) {
-    if (Math.abs(x - b.x) < b.w / 2 + p && Math.abs(z - b.z) < b.d / 2 + p) return b;
+    const nx = Math.max(b.x, Math.min(pos.x, b.x + b.w));
+    const ny = Math.max(b.y, Math.min(pos.y, b.y + b.h));
+    const dx = pos.x - nx, dy = pos.y - ny;
+    const d2 = dx * dx + dy * dy;
+    if (d2 < r * r) {
+      if (d2 > 0.0001) { const d = Math.sqrt(d2); pos.x = nx + (dx / d) * r; pos.y = ny + (dy / d) * r; }
+      else { // centre inside the box: push out along the smallest penetration
+        const left = pos.x - b.x, right = b.x + b.w - pos.x, top = pos.y - b.y, bot = b.y + b.h - pos.y;
+        const m = Math.min(left, right, top, bot);
+        if (m === left) pos.x = b.x - r; else if (m === right) pos.x = b.x + b.w + r;
+        else if (m === top) pos.y = b.y - r; else pos.y = b.y + b.h + r;
+      }
+    }
   }
-  return null;
+  // lighthouse base
+  const lh = city.lighthouse;
+  const dx = pos.x - lh.x, dy = pos.y - lh.y, rr = lh.r + r;
+  const d2 = dx * dx + dy * dy;
+  if (d2 < rr * rr && d2 > 0.0001) { const d = Math.sqrt(d2); pos.x = lh.x + (dx / d) * rr; pos.y = lh.y + (dy / d) * rr; }
+  return pos;
 }
-export function onRoad(city, x, z) {
-  const e = nearestEdge(city, x, z);
-  if (!e) return false;
-  const [ax, az] = e.pts[0], [bx, bz] = e.pts[1];
-  const dx = bx - ax, dz = bz - az, l2 = dx * dx + dz * dz || 1;
-  let t = ((x - ax) * dx + (z - az) * dz) / l2; t = clamp(t, 0, 1);
-  const px = ax + dx * t, pz = az + dz * t;
-  return Math.hypot(x - px, z - pz) < e.halfW + 4;
+
+export function insideBuilding(city, x, y) {
+  for (const b of city.buildings)
+    if (x > b.x && x < b.x + b.w && y > b.y && y < b.y + b.h) return true;
+  return false;
+}
+
+// ---- routing: breadth-first shortest path over the road graph ----
+export function findPath(city, fromId, toId) {
+  if (fromId === toId) return [fromId];
+  const prev = new Map([[fromId, -1]]);
+  const queue = [fromId];
+  while (queue.length) {
+    const cur = queue.shift();
+    for (const n of city.nodes[cur].next) {
+      if (prev.has(n)) continue;
+      prev.set(n, cur);
+      if (n === toId) {
+        const path = [toId];
+        let c = toId;
+        while (prev.get(c) !== -1) { c = prev.get(c); path.unshift(c); }
+        return path;
+      }
+      queue.push(n);
+    }
+  }
+  return [fromId];
+}
+
+export function nearestNode(city, x, y) {
+  let best = 0, bd = Infinity;
+  for (const n of city.nodes) {
+    const d = (n.x - x) * (n.x - x) + (n.y - y) * (n.y - y);
+    if (d < bd) { bd = d; best = n.id; }
+  }
+  return best;
+}
+
+export function districtAt(city, x, y) {
+  const bx = Math.max(0, Math.min(COLS - 2, Math.floor(x / PITCH)));
+  const by = Math.max(0, Math.min(ROWS - 2, Math.floor(y / PITCH)));
+  if (x < BAY_X) return DISTRICTS[0];
+  return districtOfBlock(bx, by);
 }

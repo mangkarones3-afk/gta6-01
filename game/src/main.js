@@ -1,147 +1,136 @@
-// main.js — assembles the game and runs the loop.
-// Order per frame: input -> player -> traffic -> peds -> wanted ->
-// combat -> missions -> render -> HUD -> audio -> save.
-import { CARS, WORLD } from './config.js';
-import { generateCity, districtAt } from './city.js';
-import { Renderer } from './render.js';
-import { Traffic } from './traffic.js';
-import { Pedestrians } from './pedestrians.js';
-import { Player } from './player.js';
-import { Wanted } from './wanted.js';
-import { Combat } from './combat.js';
-import { Missions } from './missions.js';
-import { HUD } from './hud.js';
-import { AudioEngine } from './audio.js';
-import { Input } from './input.js';
-import { loadSave, storeSave } from './save.js';
-import { shotIndex, stageShot } from './shots.js';
+// main.js — boot and the game loop. One job: build the state, wire the
+// systems together, and run frames (title → play → dead → respawn).
 
-const TITLE = { downtown: 'Downtown', marina: 'Marina', oldtown: 'Old Town',
-  harbor: 'Harbor', beachfront: 'Beachfront', hills: 'The Hills' };
-
-export class Game {
-  constructor(canvas) {
-    this.canvas = canvas;
-    this.city = generateCity();
-    this.renderer = new Renderer(canvas);
-    this.renderer.resize(1280, 800);
-    this.traffic = new Traffic(this.city);
-    this.peds = new Pedestrians(this.city);
-    this.player = new Player(this.city);
-    this.wanted = new Wanted(this.city);
-    this.combat = new Combat();
-    this.combat.cityRef = this.city;
-    this.missions = new Missions(this);
-    this.hud = new HUD();
-    this.audio = new AudioEngine();
-    this.input = new Input(canvas);
-    this.CARS = CARS;
-    this.mode = 'title';
-    this.time = 0; this.saveT = 0; this.districtT = 0;
-    this.overlay = document.getElementById('wasted');
-    // restore save
-    const save = loadSave();
-    if (save) {
-      this.player.cash = save.cash || 250;
-      this.player.stolenCount = save.stolen || 0;
-      this.missions.deserialize(save.missions);
-      if (save.stats) this.wanted.stats = save.stats;
-    }
-    this.wanted.onStar = () => this.audio.sirenBlip();
-    const start = () => {
-      if (this.mode === 'title') {
-        this.mode = 'play';
-        document.getElementById('start-screen').style.display = 'none';
-        this.audio.init();
-      }
-    };
-    document.getElementById('start-screen').addEventListener('click', start);
-    window.addEventListener('keydown', e => { if (e.key === 'Enter') start(); });
-  }
-  start() {
-    const shot = shotIndex();
-    if (shot >= 1 && shot <= 4) {
-      this.mode = 'shot';
-      stageShot(this, shot);
-      return;
-    }
-    let last = performance.now();
-    const loop = now => {
-      const dt = Math.min(0.05, (now - last) / 1000); last = now;
-      if (this.mode === 'play') this.update(dt);
-      this.renderer.draw(this, dt);
-      this.hud.update(this, dt);
-      this.input.endFrame();
-      requestAnimationFrame(loop);
-    };
-    requestAnimationFrame(loop);
-  }
-  endRun(text) {
-    this.overlay.querySelector('span').textContent = text;
-    this.overlay.style.display = 'flex';
-    setTimeout(() => {
-      this.overlay.style.display = 'none';
-      this.player.respawn();
-      this.wanted.heat = 0; this.wanted.stars = 0; this.wanted.state = 'CALM';
-      this.wanted.cops = []; this.wanted.footCops = []; this.wanted.bust = 0;
-      this.player.cash = Math.max(0, this.player.cash - 150);
-      storeSave(this);
-    }, 2200);
-  }
-  update(dt) {
-    const g = this, p = g.player, inp = g.input;
-    g.time += dt;
-    if (p.dead) return;
-    // mission + side-job keys
-    if (inp.hit('m') && g.missions.state === 'offer' && g.missions.def) g.missions.start();
-    if (inp.hit('j') && !g.missions.side) g.missions.startSide();
-    if (inp.hit('n')) { try { localStorage.removeItem('solano-bay-save-v1'); } catch (e) {} location.reload(); }
-    if (inp.hit('p')) g.audio.toggleMute();
-    // combat keys
-    if (inp.hit('1')) g.combat.weapon = 'pistol';
-    if (inp.hit('2')) g.combat.weapon = 'smg';
-    if (inp.hit('3')) g.combat.weapon = 'shotgun';
-    if (inp.hit('r')) g.combat.reload();
-    // aim + fire on foot
-    if (p.onFoot) {
-      const cx = g.canvas.width / 2, cy = g.canvas.height / 2;
-      p.aim = Math.atan2(inp.mouse.y - cy, inp.mouse.x - cx);
-      if (inp.mouse.down && g.combat.cool <= 0) {
-        if (g.combat.fire(p.x, p.z, p.aim)) {
-          g.audio.shot(g.combat.weapon);
-          g.wanted.addCrime('gunfire', p.x, p.z);
-          g.renderer.burst(p.x + Math.cos(p.aim) * 14, p.z + Math.sin(p.aim) * 14, '#ffd98a', 2);
-        } else if (g.combat.mag <= 0) g.combat.reload();
-      }
-    }
-    p.update(dt, inp, g.traffic, g.wanted, g.missions, g.combat, g.audio);
-    const policeNear = g.wanted.cops.length ? g.wanted.cops[0] : null;
-    g.traffic.update(dt, p, policeNear);
-    const threats = [];
-    if (g.combat.muzzle > 0) threats.push({ x: p.x, z: p.z, r: 90 });
-    if (p.car && Math.abs(p.car.speed) > 20) threats.push({ x: p.x, z: p.z, r: 42 });
-    g.peds.update(dt, p, threats);
-    const bustResult = g.wanted.update(dt, g.time, p, g.peds);
-    g.combat.update(dt, p, g.city, g.wanted, () => g.missions.registerKill());
-    g.missions.update(dt);
-    g.audio.setSiren(g.wanted.cops.length > 0 && g.wanted.stars > 0);
-    if (!p.car) g.audio.setEngine(0, false);
-    // district name for dispatch + minimap
-    g.districtT -= dt;
-    if (g.districtT <= 0) {
-      g.districtT = 0.5;
-      g.wanted.districtName = TITLE[districtAt(g.city, p.x, p.z)] || 'Downtown';
-    }
-    // death / bust
-    if (p.dead) { g.endRun('WASTED'); }
-    else if (bustResult === 'BUSTED') { p.dead = true; g.endRun('BUSTED'); }
-    // periodic save
-    g.saveT -= dt;
-    if (g.saveT <= 0) { g.saveT = 5; storeSave(g); }
-  }
-}
+import { buildCity, districtAt } from './city.js';
+import { createPlayer, updatePlayer, tryEnterExit, damagePlayer } from './player.js';
+import { seedTraffic, seedParked, updateTraffic } from './traffic.js';
+import { seedPeds, updatePeds } from './pedestrians.js';
+import { createWanted, updateWanted, addHeat } from './wanted.js';
+import { updateCombat, reload } from './combat.js';
+import { createMission, startStory, startSide, updateMissions } from './missions.js';
+import { createAudio } from './audio.js';
+import { saveGame, loadSave, clearSave } from './save.js';
+import { createInput, updateMouseWorld } from './input.js';
+import { drawWorld } from './render.js';
+import { drawHud, drawTitle } from './hud.js';
+import { applyShot } from './shots.js';
 
 const canvas = document.getElementById('game');
-const game = new Game(canvas);
-window.__game = game;
-game.start();
+const ctx = canvas.getContext('2d');
+const CW = canvas.width, CH = canvas.height;
+
+const city = buildCity();
+const saved = loadSave();
+
+const S = {
+  city, time: 0, mode: 'title', frozen: false, camLock: null,
+  cam: { x: city.spawn.x, y: city.spawn.y, viewW: 250 },
+  player: createPlayer(city),
+  cars: [], peds: [], bullets: [], particles: [],
+  wanted: createWanted(), mission: createMission(),
+  dialogue: null, dispatch: null, toast: null,
+  danger: { x: -9999, y: -9999 }, shake: 0, flashRed: 0, deadT: 0,
+  districtName: 'Playa', hasSave: !!saved,
+  audio: createAudio(), input: null, mouse: null,
+  wantedAPI: { addHeat }, saveGame,
+  districtAt: (x, y) => districtAt(city, x, y).name,
+};
+S.cars.push(...seedTraffic(city, 26), ...seedParked(city, 14));
+S.peds.push(...seedPeds(city, 42));
+S.input = createInput(canvas);
+S.mouse = S.input.mouse;
+window.__sb = S; // staging + test hook (the shots module and QA drive this)
+
+const params = new URLSearchParams(location.search);
+const shot = params.get('shot');
+if (shot) applyShot(S, shot);
+
+function startRun(fresh) {
+  if (fresh) clearSave();
+  const sv = fresh ? null : loadSave();
+  if (sv) {
+    S.player.cash = sv.cash;
+    S.player.hp = Math.max(40, sv.hp);
+    S.player.x = sv.x; S.player.y = sv.y;
+    startStory(S, Math.min(4, sv.missionIdx));
+  } else {
+    startStory(S, 0);
+  }
+  S.mode = 'play';
+  S.audio.unlock();
+}
+
+function respawn() {
+  const P = S.player;
+  P.dead = false; P.hp = 100; P.car = null;
+  P.x = S.city.spawn.x; P.y = S.city.spawn.y;
+  P.cash = Math.max(0, P.cash - Math.floor(P.cash * 0.08));
+  S.wanted.heat = 0; S.wanted.stars = 0; S.wanted.phase = 'clear';
+  S.cars = S.cars.filter(c => c.kind !== 'cop');
+  S.wanted.roadblocks = [];
+  S.mode = 'play';
+  S.toast = { text: 'PATCHED UP — THE BAY GOES ON', until: S.time + 3 };
+  saveGame(S);
+}
+
+function handlePressed() {
+  const pr = S.input.pressed;
+  if (S.mode === 'title') {
+    if (pr.has('Enter')) startRun(false);
+    if (pr.has('KeyN')) startRun(true);
+    pr.clear(); return;
+  }
+  if (S.mode === 'dead') {
+    if (pr.has('Enter')) respawn();
+    pr.clear(); return;
+  }
+  if (pr.has('KeyE')) tryEnterExit(S);
+  if (pr.has('KeyR')) reload(S);
+  if (pr.has('Digit1')) S.player.weapon = 0;
+  if (pr.has('Digit2')) S.player.weapon = 1;
+  if (pr.has('Digit3')) S.player.weapon = 2;
+  if (pr.has('KeyJ')) startSide(S);
+  if (pr.has('KeyP')) S.audio.toggleMute();
+  pr.clear();
+}
+
+let last = performance.now(), saveT = 0;
+function frame(now) {
+  requestAnimationFrame(frame);
+  let dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  handlePressed();
+  updateMouseWorld(S.input, S.cam, CW, CH);
+
+  if (S.mode === 'play' && !S.frozen) {
+    S.time += dt;
+    updatePlayer(S, dt);
+    updateTraffic(S, dt);
+    updatePeds(S, dt);
+    updateWanted(S, dt);
+    updateCombat(S, dt);
+    updateMissions(S, dt);
+    S.audio.update(S);
+    if (!S.player.car) S.audio.engineOff();
+    S.districtName = districtAt(city, S.player.x, S.player.y).name;
+    saveT += dt;
+    if (saveT > 6) { saveT = 0; saveGame(S); }
+  }
+  if (S.mode === 'dead') S.deadT += dt;
+
+  drawWorld(ctx, S, CW, CH);
+  if (S.mode === 'title') drawTitle(ctx, S, CW, CH);
+  else {
+    drawHud(ctx, S, CW, CH);
+    if (S.mode === 'dead') {
+      ctx.fillStyle = 'rgba(20,4,8,0.62)'; ctx.fillRect(0, 0, CW, CH);
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#ff5040'; ctx.font = '900 54px system-ui, sans-serif';
+      ctx.fillText('WASTED', CW / 2, CH * 0.42);
+      ctx.fillStyle = '#ffe9c4'; ctx.font = '600 17px system-ui, sans-serif';
+      ctx.fillText('The bay patches Reno up. The debt, and the day, go on.', CW / 2, CH * 0.42 + 46);
+      ctx.fillText('ENTER — wake up at Playa (8% hospital fee)', CW / 2, CH * 0.42 + 76);
+    }
+  }
+}
+requestAnimationFrame(frame);

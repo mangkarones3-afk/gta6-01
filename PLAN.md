@@ -1,97 +1,76 @@
-# Solano Bay — Phase 4 plan (Workflow V2.0), gta6-01 rebuild #3
+# Solano Bay — build plan (Workflow V2, Phase 4)
 
-This is the third recorded build of the same game. Build #2 (Solano Bay)
-was completed and fully verified — 17/17 headless playtest, kit check
-clean, dossier byte-identical across two runs — but its sealed
-recording was refused because an unrelated research session straddled
-that recorder's start line. Nothing about the game failed. This session
-re-authors the identical game, file by file, under recording
-01a1ea63-0142-71ed-9612-5f7d5c386ee2. The verified build at
-`../gta6-01-ref-sealedbad-01a1ea49/` (HEAD 024f4eb) is a read-only
-design reference: every file is written fresh here, never copied (sole
-exception: `vendor/makefun-game.ts`, copied byte-identical from the
-kit, as the brief requires).
+## What this is
 
-## Architecture call (from the Phase 2 study — settled, not relitigated)
+An original open-world crime game for make.fun bounty gta6-01: a sun-soaked
+coastal city explored on foot and by car, with traffic, pedestrians, stealable
+cars, a wanted system with responding police, a five-mission story plus side
+jobs, combat, a HUD with a populated minimap, a start screen, and local save.
+2D top-down canvas, vanilla JS, no libraries, no network. Everything original:
+city (Solano Bay), people (Reno Kade, Mara Voss), police (SBPD), places, story.
 
-Stay **2D canvas, top-down**. Ranks 1–2 on the live board are both 2D;
-what beat the first build was framing, saturation, signage and minimap
-content, not a 3D depth cue. Keep the criterion-5 strength: 16
-single-job source files under `game/src/`, named for what they do.
-City name **Solano Bay**; hero Reno Kade, contact Mara Voss, police
-the SBPD.
+## Why 2D (Phase 2 evidence)
 
-## Stages
+The Phase 2 top-10 study (475-entry field) found ranks 1–2 are both 2D
+top-down; what separates the leaders is framing (~3×3 blocks), saturation
+(sunset grade, mean cover brightness ~90–125), legible police confrontation
+in the cover, diegetic signage (≥4 named POIs in frame), a minimap with
+content, and progression shown numerically. A 3D switch buys only a depth
+cue and spends the build budget on a new engine. Decision: punched-up 2D,
+with study fixes F1–F7 as hard gates (below).
 
-1. Scaffold: `PLAN.md`, `.gitignore`, `LICENSE` (SPDX line 1),
-   `.makefun/owner.json`, `vendor/makefun-game.ts` (kit `cp`, `cmp`-verified).
-2. World data: `config.js` (sunset palette, districts, POIs, wanted /
-   car / weapon numbers), `rng.js` (seeded streams only), `city.js`
-   (road graph, blocks, buildings with reserved landmark parcels,
-   named POIs pinned to buildings, Marina Pier + boardwalk,
-   Palmera Park with pond).
-3. Render: `render.js` — saturated sunset grade (measured cover
-   brightness ~105–125), world-scaled cars (~14 units) and people,
-   POI/landmark sign boards sized from measured text, roadblock drawn
-   after buildings so its label can never be overpainted.
-4. Systems: `traffic.js` (bicycle model + lane-following AI),
-   `pedestrians.js` (witnesses who flee), `player.js` (foot + driving,
-   stealing), `wanted.js` (heat → stars, BFS-routed pursuits, foot
-   cops, roadblocks at 3★, SEARCH → COOLDOWN escape), `combat.js`
-   (3 weapons, enemy crews), `missions.js` (5 story jobs + 3 side
-   jobs). Enemies and foot cops collide with buildings via the shared
-   `slideMove` helper.
-5. Presentation: `hud.js` (MISSION n/5 objective with live distance,
-   dispatch ticker, populated minimap — district tints, POI dots,
-   objective diamond, police blips, clamped district label),
-   `audio.js` (all-synthesized SFX plus a generative music loop),
-   `save.js`, `input.js`, `shots.js` (deterministic staging),
-   `main.js`, `game/index.html`, `game/css/style.css`.
-6. Packaging: `main.ts` (dossier opts identical to the kit's gate
-   values; revised again in a later separate message), `README.md`
-   with the 3 live make.fun badges verbatim from the brief.
-7. Phase 6 loop: headless playtests, screenshots, judge-view sheet,
-   fixes, kit check, super-teliti passes (below).
+## Structure (one job per file — criterion 5)
 
-## Per-deliverable quality targets (study codes F1–F7 are hard gates)
+- `main.ts` — repo root: copies `game/` + `screenshots/` to the output dir
+  and writes `dossier.json` via `buildDossier` from `vendor/makefun-game.ts`.
+- `vendor/makefun-game.ts` — the kit library, copied byte-identical (`cp`).
+- `game/index.html` + `game/css/style.css` — shell and styling.
+- `game/src/` — config (world geometry, districts, POIs, tuning), rng
+  (seeded streams), city (procedural generation, road graph, collision),
+  render (canvas drawing + sunset grade), hud (HUD, minimap, dialogue,
+  menus), traffic (road-graph traffic + parked cars), pedestrians, player
+  (on-foot + driving), wanted (heat, stars, police AI, roadblocks, pursuit
+  phases), combat (weapons, bullets, health), missions (5 story + 3 side,
+  dialogue, objectives), audio (generated SFX + music loop), save
+  (localStorage), input (keyboard/mouse), shots (deterministic staged
+  scenes for the screenshots), main (boot + game loop + state machine).
+- `screenshots/` — 4 real renders, 1280×800 JPEG q85, ≤ 256 KiB each:
+  `01-cover.jpg` (staged police box-in), `02-park.jpg` (on foot, mission
+  4/5), `03-marina.jpg` (pier), `04-chase.jpg` (3-star pursuit).
 
-- **F1 Cover** — a legible police box-in: 3 cop cars confronting the
-  player car centre-frame on the z=4 downtown arterial, 4 stars lit,
-  ROADBLOCK label fully visible, dialogue line naming the escape.
-- **F2 Camera** — gameplay framing ~3×3 blocks: scale ≈4.6 driving /
-  ≈5.6 on foot. One on-foot close frame (Palmera Park) in the shot set.
-- **F3 Palette** — saturated sunset/dusk grade: deep navy roads, warm
-  terracotta/cream/teal buildings, deep teal water. No washed pastel.
-- **F4 Signage** — ≥4 named POIs readable in the cover frame (Solano
-  Tower, Banco del Sol, Hotel Paloma, Cine Solano), 10 citywide;
-  Marina Pier + Palmera Park break the grid.
-- **F5 Minimap** — populated: district tints, water, POI dots,
-  objective diamond, police blips, safehouse, player arrow.
-- **F6 Progression** — "MISSION n/5" + objective + distance in the
-  HUD panel; one-line story-arc pitch on the title screen.
-- **F7 No clipped HUD labels** — sign panels sized from measured
-  text; minimap district label clamped inside its frame; roadblock
-  label drawn last.
-- Systems bar (criterion 1, all must exist and run): city on foot +
-  by car, traffic, pedestrians, stealable cars, wanted + responding
-  police, 5 story missions + 3 side jobs, combat, HUD + minimap,
-  start screen, save. **Mission 3's heat step tested end-to-end**
-  headlessly (reach 3 stars → break sight → SEARCH → COOLDOWN →
-  mission completes, +$1,500).
+## Hard gates (from the brief + study)
 
-## Verification method (Phase 6, super-teliti)
+- F1 cover: hero car centre-frame at an avenue intersection, boxed in by 3
+  SBPD cars from three sides (none occluded), striped roadblock with a
+  fully visible ROADBLOCK label east, 4 stars lit.
+- F2 camera ~3×3 blocks in gameplay shots; one on-foot close frame.
+- F3 saturated sunset grade; cover mean luma 105–125 measured with PIL.
+- F4 ≥8 readable shop/POI signs in the cover; landmarks (Marina Pier,
+  Palmera Park) break the grid.
+- F5 minimap populated: district tints + labels, POI dots, objective
+  diamond, police blips, player arrow.
+- F6 HUD shows MISSION n/5 + objective + live distance; title screen
+  carries a one-line arc pitch.
+- F7 no clipped HUD labels anywhere in any shot.
+- Gate numbers: game/ ≤993 entries, ≤48 MiB; screenshots 3–4, each
+  ≤262,144 B, long side ≤1,280, short ≥480; dossier ≤1.5 MiB and
+  byte-identical across two `main.ts` runs.
+- Wanted model: heat 0–500, star thresholds 40/100/180/280/400, roadblocks
+  at 3★+, pursuit → search → cooldown → clear phases, heat decays unseen.
+- Story: Reno Kade owes fixer Mara Voss; 5 missions work the debt off;
+  mission 1 = steal a marked car and deliver it; mission 3 = pickup that
+  steps heat to 3★, escape until clear, then reach the plaza.
 
-- Headless Chromium (Playwright) playtest suite: boot with zero page
-  errors; scripted end-to-end runs of missions 1 and 3; steal /
-  drive / shoot / save exercised through the real input paths; enemy
-  building-collision sampling while chasing.
-- Screenshots: 4 real renders at 1280×800 via the game's own
-  `?shot=` staging, JPEG ≤ 256 KiB each, then viewed at judge size
-  (cover fitted inside 768×480) and read against F1–F7; cover
-  brightness measured and compared with the study's table.
-- `main.ts` run twice into two output dirs → byte-identical trees.
-- Kit check from the kit dir (`transcripts_present` failing locally
-  is the expected dry-run artifact; everything else must pass).
-- Gate arithmetic two ways: file/size caps counted by hand and by
-  the kit check.
-- No push, no seal, no submit — the parent runs Phases 7–8.
+## Verification (Phase 6, before calling anything done)
+
+- Headless Chromium/CDP playtest on the final tree: boot with zero page
+  errors; exact city counts; walking; mission 1 end-to-end (steal → heat →
+  drive → deliver → exact cash); mission 3 end-to-end (3★ step → escape
+  through the phase machine → plaza → cash); shooting decrements the
+  magazine; save written; building-collision sampling clean.
+- Improvement round after the first playtest: revise several files (and
+  `main.ts` again) from what the playtest and screenshots show.
+- `node main.ts` twice → byte-identical dossier (diff + sha256).
+- Kit check from the kit dir; secrets sweep of the whole tree.
+- Screenshots measured (bytes, geometry, cover luma) and read against
+  F1–F7 one by one.
