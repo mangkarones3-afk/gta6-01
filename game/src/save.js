@@ -1,32 +1,37 @@
-// save.js — localStorage persistence. One job: write and read the run's
-// progress (cash, story position, health, place) so a reload can continue.
+// save.js — localStorage persistence. Wanted state is never saved: a load
+// always starts calm (genre convention, and it keeps a save from reloading
+// into a pursuit the player did not choose). Progress, cash, position and
+// wanted-derived stats are what persist.
 
-const KEY = 'solano-bay-save-v1';
+const SBSave = (() => {
+  const KEY = "solano-bay-save-v1";
 
-export function saveGame(S) {
-  try {
-    const data = {
-      cash: S.player.cash,
-      missionIdx: S.mission.done ? 5 : Math.max(0, S.mission.idx),
-      hp: Math.round(S.player.hp),
-      x: Math.round(S.player.car ? S.player.x : S.player.x),
-      y: Math.round(S.player.y),
-    };
-    localStorage.setItem(KEY, JSON.stringify(data));
-    S.hasSave = true;
-  } catch (e) { /* storage unavailable: play on without saving */ }
-}
+  function write(data) {
+    try {
+      localStorage.setItem(KEY, JSON.stringify(data));
+    } catch (err) {
+      // Storage can be unavailable (private mode); the game still runs.
+    }
+  }
 
-export function loadSave() {
-  try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return null;
-    const d = JSON.parse(raw);
-    if (typeof d.cash !== 'number' || typeof d.missionIdx !== 'number') return null;
-    return d;
-  } catch (e) { return null; }
-}
+  function read() {
+    try {
+      const raw = localStorage.getItem(KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (err) {
+      return null;
+    }
+  }
 
-export function clearSave() {
-  try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ }
-}
+  function clear() {
+    try { localStorage.removeItem(KEY); } catch (err) { /* ignore */ }
+  }
+
+  function has() {
+    return read() !== null;
+  }
+
+  return { write, read, clear, has };
+})();
+
+window.SBSave = SBSave;

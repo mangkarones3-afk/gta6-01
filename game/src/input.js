@@ -1,33 +1,50 @@
-// input.js — keyboard and mouse state. One job: track held keys, edge
-// presses (consumed once per frame by main), and the mouse in both screen
-// and world coordinates.
+// input.js — keyboard and mouse state. Everything else reads intents from
+// here; raw events never leak into the systems.
 
-export function createInput(canvas) {
-  const I = {
-    keys: new Set(), pressed: new Set(),
-    mouse: { x: 0, y: 0, worldX: 0, worldY: 0, down: false },
-  };
-  window.addEventListener('keydown', e => {
-    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
-    if (!e.repeat) I.pressed.add(e.code);
-    I.keys.add(e.code);
-  });
-  window.addEventListener('keyup', e => I.keys.delete(e.code));
-  window.addEventListener('blur', () => { I.keys.clear(); I.mouse.down = false; });
-  canvas.addEventListener('mousemove', e => {
-    const r = canvas.getBoundingClientRect();
-    I.mouse.x = (e.clientX - r.left) * (canvas.width / r.width);
-    I.mouse.y = (e.clientY - r.top) * (canvas.height / r.height);
-  });
-  canvas.addEventListener('mousedown', e => { if (e.button === 0) I.mouse.down = true; });
-  window.addEventListener('mouseup', e => { if (e.button === 0) I.mouse.down = false; });
-  canvas.addEventListener('contextmenu', e => e.preventDefault());
-  return I;
-}
+const SBInput = (() => {
+  const keys = new Set();
+  const pressed = new Set(); // keydown edges since the last frame — a fast
+  // tap can fall entirely between two frames, so polling `keys` alone
+  // would miss it; one-shot interactions consume edges instead.
+  const mouse = { x: 0, y: 0, down: false, clicked: false };
+  let advancePressed = false;
 
-// Convert the stored screen mouse into world coordinates for this frame.
-export function updateMouseWorld(I, cam, cw, ch) {
-  const vh = cam.viewW * (ch / cw);
-  I.mouse.worldX = cam.x - cam.viewW / 2 + (I.mouse.x / cw) * cam.viewW;
-  I.mouse.worldY = cam.y - vh / 2 + (I.mouse.y / ch) * vh;
-}
+  function bind(canvas) {
+    addEventListener("keydown", (ev) => {
+      if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(ev.code)) ev.preventDefault();
+      if (!ev.repeat && (ev.code === "Enter" || ev.code === "Space")) advancePressed = true;
+      if (!ev.repeat) pressed.add(ev.code);
+      keys.add(ev.code);
+    });
+    addEventListener("keyup", (ev) => keys.delete(ev.code));
+    canvas.addEventListener("mousemove", (ev) => {
+      const r = canvas.getBoundingClientRect();
+      mouse.x = (ev.clientX - r.left) * (canvas.width / r.width);
+      mouse.y = (ev.clientY - r.top) * (canvas.height / r.height);
+    });
+    canvas.addEventListener("mousedown", () => { mouse.down = true; mouse.clicked = true; });
+    addEventListener("mouseup", () => { mouse.down = false; });
+    canvas.addEventListener("contextmenu", (ev) => ev.preventDefault());
+  }
+
+  function axis() {
+    const x = (keys.has("KeyD") || keys.has("ArrowRight") ? 1 : 0) - (keys.has("KeyA") || keys.has("ArrowLeft") ? 1 : 0);
+    const y = (keys.has("KeyS") || keys.has("ArrowDown") ? 1 : 0) - (keys.has("KeyW") || keys.has("ArrowUp") ? 1 : 0);
+    return { x, y };
+  }
+  function consumeAdvance() {
+    const a = advancePressed;
+    advancePressed = false;
+    return a;
+  }
+  function consumeClick() {
+    const c = mouse.clicked;
+    mouse.clicked = false;
+    return c;
+  }
+  function endFrame() { pressed.clear(); }
+
+  return { bind, keys, pressed, mouse, axis, consumeAdvance, consumeClick, endFrame };
+})();
+
+window.SBInput = SBInput;

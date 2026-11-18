@@ -1,65 +1,110 @@
-// pedestrians.js — people on the sidewalks. One job: spawn the crowd,
-// stroll it along the road edges, and make it flee from danger.
+// pedestrians.js — sidewalk crowds. A pedestrian lives on a sidewalk path
+// (edge + side + arclength), walks it, picks a new edge at each junction,
+// and flees threats as free movement before snapping back to a path.
+// States: walk, flee, down. Cars never win an argument with a pedestrian
+// who is actually hit — the hit is reported as a crime by the caller.
 
-import { ROAD_W } from './config.js';
-import { stream, range, pick } from './rng.js';
-import { collide } from './city.js';
+const SBPedestrians = (() => {
+  const C = window.SBConfig;
+  const City = window.SBCity;
+  const R = window.SBRng;
+  const rng = R.streamFor(C.seed, "peds");
+  const SHIRTS = ["#e74c3c", "#f39c12", "#27ae60", "#8e44ad", "#fd79a8", "#00b8d4", "#f5f0e6", "#5d6d7e", "#e67e22", "#a3e635"];
+  const SKINS = ["#f2c094", "#c68642", "#8d5524", "#ffdbac", "#6b4423"];
 
-const SKIN = ['#f0c8a0', '#c98a5a', '#8a5a34', '#6e4525'];
-const CLOTH = ['#c9542e', '#2e7f86', '#e8c07a', '#7a9a3a', '#8a3b5c', '#e6e2d5', '#3f6fb5', '#d9905f', '#3a3a3a', '#b5523c'];
-
-export function seedPeds(city, count) {
-  const rng = stream(9182, 'peds');
   const peds = [];
-  for (let k = 0; k < count; k++) {
-    const n = city.nodes[Math.floor(rng() * 225)];
-    const to = pick(rng, n.next.filter(x => x < 225));
-    peds.push({
-      x: n.x + range(rng, -8, 8), y: n.y + range(rng, -8, 8),
-      from: n.id, to, speed: range(rng, 26, 44),
-      color: pick(rng, CLOTH), hp: 20, dead: false, flee: 0, hostile: false,
-      fireT: 0, angle: 0,
-    });
-  }
-  return peds;
-}
 
-export function updatePeds(S, dt) {
-  const rng = Math.random;
-  for (const p of S.peds) {
-    if (p.dead) continue;
-    if (p.hostile) continue; // hostiles are driven by combat.js
-    let vx = 0, vy = 0;
-    if (p.flee > 0) {
-      p.flee -= dt;
-      const dx = p.x - S.danger.x, dy = p.y - S.danger.y;
-      const d = Math.hypot(dx, dy) || 1;
-      vx = (dx / d) * 95; vy = (dy / d) * 95;
-    } else {
-      const t = S.city.nodes[p.to];
-      // walk the sidewalk: offset to the left of travel direction
-      const f = S.city.nodes[p.from];
-      const hx = t.x - f.x, hy = t.y - f.y, hd = Math.hypot(hx, hy) || 1;
-      const gx = t.x + (-hy / hd) * (ROAD_W / 2 + 3.5), gy = t.y + (hx / hd) * (ROAD_W / 2 + 3.5);
-      const dx = gx - p.x, dy = gy - p.y, d = Math.hypot(dx, dy);
-      if (d < 6) {
-        const opts = S.city.nodes[p.to].next.filter(n => n !== p.from && n < 225);
-        p.from = p.to;
-        p.to = opts.length ? opts[Math.floor(rng() * opts.length)] : p.from;
-      } else { vx = (dx / d) * p.speed; vy = (dy / d) * p.speed; }
+  function poseOnPath(p) {
+    const e = City.edges[p.edge];
+    const ux = (e.bx - e.ax) / e.len, uy = (e.by - e.ay) / e.len;
+    const off = e.halfW + 1.5;
+    return {
+      x: e.ax + ux * p.s + -uy * p.side * off,
+      y: e.ay + uy * p.s + ux * p.side * off,
+      heading: Math.atan2(uy * p.along, ux * p.along),
+    };
+  }
+
+  function spawnPed(player) {
+    if (peds.length >= 30) return;
+    for (let tries = 0; tries < 6; tries++) {
+      const e = City.edges[Math.floor(rng() * City.edges.length)];
+      const mid = Math.hypot((e.ax + e.bx) / 2 - player.x, (e.ay + e.by) / 2 - player.y);
+      if (mid < 70 || mid > 190) continue;
+      const p = {
+        edge: e.id, side: rng() > 0.5 ? 1 : -1,
+        s: R.range(rng, 6, e.len - 6), along: rng() > 0.5 ? 1 : -1,
+        speed: R.range(rng, 1.2, 1.7), state: "walk", fleeFor: 0,
+        x: 0, y: 0, heading: 0, color: R.pick(rng, SHIRTS), skin: R.pick(rng, SKINS),
+        down: false, downFor: 0, threatX: 0, threatY: 0,
+      };
+      const pose = poseOnPath(p);
+      p.x = pose.x; p.y = pose.y; p.heading = pose.heading;
+      if (City.buildingHit(p.x, p.y, 0.6)) continue;
+      peds.push(p);
+      return;
     }
-    p.x += vx * dt; p.y += vy * dt;
-    p.angle = Math.atan2(vy, vx);
-    const pos = collide(S.city, p, 4.5);
-    p.x = pos.x; p.y = pos.y;
   }
-}
 
-// A gunshot or crash nearby: everyone in earshot runs.
-export function panic(S, x, y, radius) {
-  S.danger.x = x; S.danger.y = y;
-  for (const p of S.peds) {
-    if (p.dead || p.hostile) continue;
-    if (Math.hypot(p.x - x, p.y - y) < radius) p.flee = Math.max(p.flee, 2.6);
+  function fleeFrom(p, x, y, seconds) {
+    if (p.down) return;
+    p.state = "flee";
+    p.fleeFor = Math.max(p.fleeFor, seconds || 4);
+    p.threatX = x; p.threatY = y;
   }
-}
+
+  function stepPeds(dt, world) {
+    const player = world.player;
+    spawnPed(player);
+    for (let i = peds.length - 1; i >= 0; i--) {
+      const p = peds[i];
+      const distP = Math.hypot(p.x - player.x, p.y - player.y);
+      if (distP > 240 && p.state !== "flee") { peds.splice(i, 1); continue; }
+      if (p.down) {
+        p.downFor -= dt;
+        if (p.downFor <= 0) { p.down = false; p.state = "walk"; }
+        continue;
+      }
+      if (p.state === "flee") {
+        p.fleeFor -= dt;
+        const dx = p.x - p.threatX, dy = p.y - p.threatY;
+        const d = Math.hypot(dx, dy) || 1;
+        const nx = p.x + (dx / d) * 4.4 * dt, ny = p.y + (dy / d) * 4.4 * dt;
+        if (!City.buildingHit(nx, ny, 0.5) && City.isLand(nx, ny)) { p.x = nx; p.y = ny; }
+        p.heading = Math.atan2(dy, dx);
+        if (p.fleeFor <= 0) {
+          // Snap back to the nearest edge's sidewalk.
+          let best = null, bd = Infinity;
+          for (const e of City.edges) {
+            const mx = (e.ax + e.bx) / 2, my = (e.ay + e.by) / 2;
+            const dd = (mx - p.x) * (mx - p.x) + (my - p.y) * (my - p.y);
+            if (dd < bd) { bd = dd; best = e; }
+          }
+          p.edge = best.id; p.side = 1; p.along = 1;
+          p.s = Math.max(4, Math.min(best.len - 4, best.len / 2));
+          p.state = "walk";
+        }
+        continue;
+      }
+      // Walk the sidewalk path.
+      p.s += p.speed * p.along * dt;
+      const e = City.edges[p.edge];
+      if (p.s >= e.len - 1 || p.s <= 1) {
+        const nodeId = p.s >= e.len - 1 ? (p.along > 0 ? e.b : e.a) : (p.along > 0 ? e.a : e.b);
+        const node = City.nodes[nodeId];
+        const options = node.edges.map((eid) => City.edges[eid]);
+        const next = options[Math.floor(rng() * options.length)];
+        p.edge = next.id;
+        if (next.a === nodeId) { p.s = 1.5; p.along = 1; }
+        else { p.s = next.len - 1.5; p.along = -1; }
+        if (rng() < 0.3) p.side = -p.side;
+      }
+      const pose = poseOnPath(p);
+      p.x = pose.x; p.y = pose.y; p.heading = pose.heading;
+    }
+  }
+
+  return { peds, spawnPed, stepPeds, fleeFrom };
+})();
+
+window.SBPedestrians = SBPedestrians;

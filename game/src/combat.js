@@ -1,147 +1,126 @@
-// combat.js — guns, fists, bullets and the people who shoot back.
-// One job: resolve all violence — player fire, hostile fire, damage.
+// combat.js — fists, the pistol, officer return fire, and damage. Combat
+// never touches heat directly: every violent act is reported through
+// wanted.addCrime and the wanted system decides what it costs.
 
-import { WEAPONS } from './config.js';
-import { panic } from './pedestrians.js';
-import { damagePlayer } from './player.js';
+const SBCombat = (() => {
+  const City = window.SBCity;
+  const effects = []; // {kind:'tracer'|'flash'|'ring', ... , until}
 
-export function burst(S, x, y, color, n, speed) {
-  for (let i = 0; i < n; i++) {
-    const a = Math.random() * Math.PI * 2, v = speed * (0.3 + Math.random() * 0.7);
-    S.particles.push({
-      x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v,
-      life: 0.4 + Math.random() * 0.3, max: 0.7, color, s: 2.6,
-    });
-  }
-}
-
-function fireBullet(S, x, y, angle, w, from) {
-  S.bullets.push({
-    x, y, vx: Math.cos(angle) * w.speed, vy: Math.sin(angle) * w.speed,
-    life: w.range / w.speed, damage: w.damage, from,
-  });
-}
-
-export function playerFire(S) {
-  const P = S.player;
-  const w = WEAPONS[P.weapon];
-  if (P.reloadT > 0 || P.fireT > 0 || P.dead) return;
-  if (P.mags[P.weapon] <= 0) { reload(S); return; }
-  P.fireT = w.rate;
-  if (w.mag !== Infinity) P.mags[P.weapon]--;
-  const ox = P.x + Math.cos(P.aim) * 10, oy = P.y + Math.sin(P.aim) * 10;
-  if (S.audio) S.audio.shoot(P.weapon);
-  panic(S, P.x, P.y, 150);
-  // any cop in earshot takes notice
-  for (const c of S.cars) {
-    if (c.kind === 'cop' && Math.hypot(c.x - P.x, c.y - P.y) < 330) { S.wantedAPI.addHeat(S, 4, 'SHOTS FIRED'); break; }
-  }
-  if (w.id === 'fists') {
-    // swing: hit whoever is in front, close
-    for (const p of S.peds) {
-      if (p.dead) continue;
-      const d = Math.hypot(p.x - P.x, p.y - P.y);
-      if (d < w.range + 6) {
-        p.hp -= w.damage;
-        burst(S, p.x, p.y, '#e33f2e', 4, 40);
-        if (p.hp <= 0) { p.dead = true; S.wantedAPI.addHeat(S, 45, 'ASSAULT'); }
-        else p.flee = 3;
+  function punch(world) {
+    const pl = world.player;
+    let hitAny = false;
+    for (const p of world.peds) {
+      if (p.down) continue;
+      const d = Math.hypot(p.x - pl.x, p.y - pl.y);
+      if (d < 2.1) {
+        p.hp = (p.hp === undefined ? 30 : p.hp) - 16;
+        hitAny = true;
+        if (p.hp <= 0) { p.down = true; p.downFor = 6; SBWanted.addCrime("pedHit", p.x, p.y, world); }
+        else SBPedestrians.fleeFrom(p, pl.x, pl.y, 4);
       }
     }
-    return;
-  }
-  const spread = w.id === 'smg' ? (Math.random() - 0.5) * 0.07 : (Math.random() - 0.5) * 0.02;
-  fireBullet(S, ox, oy, P.aim + spread, w, 'player');
-  burst(S, ox, oy, '#ffd76a', 2, 26);
-}
-
-export function reload(S) {
-  const P = S.player;
-  const w = WEAPONS[P.weapon];
-  if (w.mag === Infinity || P.mags[P.weapon] === w.mag || P.reloadT > 0) return;
-  P.reloadT = 0.9;
-  if (S.audio) S.audio.reload();
-  P.pendingReload = true; // updateCombat refills the mag when the timer ends
-}
-
-// One bullet at its current position: test it against people and cars.
-function resolveBullet(S, b) {
-  const P = S.player;
-  if (b.life <= 0) return;
-  if (b.from === 'player') {
-    for (const p of S.peds) {
-      if (p.dead) continue;
-      if (Math.hypot(p.x - b.x, p.y - b.y) < 6.5) {
-        p.hp -= b.damage; b.life = 0;
-        burst(S, p.x, p.y, '#e33f2e', 5, 46);
-        if (p.hp <= 0) { p.dead = true; panic(S, p.x, p.y, 120); S.wantedAPI.addHeat(S, p.hostile ? 15 : 55, p.hostile ? 'SHOOTOUT' : 'HOMICIDE'); }
-        else p.flee = 3;
-        return;
+    for (const cop of SBWanted.S.cops) {
+      if (Math.hypot(cop.x - pl.x, cop.y - pl.y) < 2.6) {
+        cop.hp -= 10;
+        hitAny = true;
       }
     }
-    for (const c of S.cars) {
-      if (c.dead || c === P.car) continue;
-      if (Math.hypot(c.x - b.x, c.y - b.y) < 11) {
-        c.hp -= b.damage; b.life = 0;
-        burst(S, b.x, b.y, '#ffb020', 4, 40);
-        if (c.hp <= 0) {
-          c.dead = true; burst(S, c.x, c.y, '#555560', 14, 60);
-          if (c.kind === 'cop') S.wantedAPI.addHeat(S, 80, 'SBPD UNIT DOWN');
-          if (S.audio) S.audio.explosion();
+    if (hitAny && window.SBAudio) SBAudio.thud();
+    return hitAny;
+  }
+
+  function shoot(world, tx, ty) {
+    const pl = world.player;
+    if (!pl.armed) return false;
+    if (window.SBAudio) SBAudio.gunshot();
+    SBWanted.addCrime("gunshot", pl.x, pl.y, world);
+    for (const p of world.peds) {
+      if (Math.hypot(p.x - pl.x, p.y - pl.y) < 26) SBPedestrians.fleeFrom(p, pl.x, pl.y, 5);
+    }
+    // Hitscan: nearest target along the ray wins.
+    const dx = tx - pl.x, dy = ty - pl.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len, uy = dy / len;
+    const maxD = Math.min(len, 65);
+    let bestD = maxD, bestPed = null, bestCop = null;
+    const testTarget = (o, r) => {
+      const ox = o.x - pl.x, oy = o.y - pl.y;
+      const along = ox * ux + oy * uy;
+      if (along < 0 || along > bestD) return -1;
+      const perp = Math.abs(-ox * uy + oy * ux);
+      return perp < r ? along : -1;
+    };
+    for (const p of world.peds) {
+      if (p.down) continue;
+      const d = testTarget(p, 0.8);
+      if (d > 0) { bestD = d; bestPed = p; bestCop = null; }
+    }
+    for (const cop of SBWanted.S.cops) {
+      const d = testTarget(cop, 1.5);
+      if (d > 0) { bestD = d; bestCop = cop; bestPed = null; }
+    }
+    // Buildings block the shot.
+    const steps = Math.floor(bestD / 2);
+    for (let i = 1; i < steps; i++) {
+      if (City.buildingHit(pl.x + ux * i * 2, pl.y + uy * i * 2, -0.2)) { bestPed = null; bestCop = null; bestD = i * 2; break; }
+    }
+    effects.push({ kind: "tracer", x1: pl.x + ux * 1.2, y1: pl.y + uy * 1.2, x2: pl.x + ux * bestD, y2: pl.y + uy * bestD, until: world.time + 0.07 });
+    effects.push({ kind: "flash", x: pl.x + ux * 1.3, y: pl.y + uy * 1.3, until: world.time + 0.05 });
+    if (bestPed) {
+      bestPed.hp = (bestPed.hp === undefined ? 30 : bestPed.hp) - 34;
+      if (bestPed.hp <= 0) { bestPed.down = true; bestPed.downFor = 8; SBWanted.addCrime("pedKill", bestPed.x, bestPed.y, world); }
+    }
+    if (bestCop) {
+      bestCop.hp -= 34;
+      if (bestCop.hp <= 0) SBWanted.addCrime("officerDown", bestCop.x, bestCop.y, world);
+    }
+    return true;
+  }
+
+  // Officer return fire at 3+ stars, plus player damage bookkeeping.
+  function update(dt, world) {
+    const pl = world.player;
+    if (pl.lastHurtAt === undefined) pl.lastHurtAt = -99;
+    if (world.time - pl.lastHurtAt > 6 && pl.health < 100) {
+      pl.health = Math.min(100, pl.health + 5 * dt);
+    }
+    if (SBWanted.S.stars < 3 || world.playerCar) return;
+    for (const cop of SBWanted.S.cops) {
+      if (cop.mode === "leave") continue;
+      cop.fireT = (cop.fireT || 0) - dt;
+      const d = Math.hypot(cop.x - pl.x, cop.y - pl.y);
+      if (d > 30 || d < 4) continue;
+      if (!SBWanted.losClear(cop.x, cop.y, pl.x, pl.y)) continue;
+      if (cop.fireT <= 0) {
+        cop.fireT = 1.15;
+        if (window.SBAudio) SBAudio.gunshot(true);
+        effects.push({ kind: "tracer", x1: cop.x, y1: cop.y, x2: pl.x, y2: pl.y, until: world.time + 0.06, enemy: true });
+        const hitChance = Math.max(0.15, 0.62 - d * 0.014);
+        if (world.rng() < hitChance) {
+          pl.health -= 6;
+          pl.lastHurtAt = world.time;
+          if (pl.health <= 0) world.onWasted();
         }
-        return;
       }
     }
-  } else { // hostile bullet
-    if (Math.hypot(P.x - b.x, P.y - b.y) < (P.car ? 11 : 7)) {
-      b.life = 0;
-      damagePlayer(S, 6);
-      burst(S, P.x, P.y, '#e33f2e', 4, 40);
-    }
   }
-}
 
-export function updateCombat(S, dt) {
-  const P = S.player;
-  if (P.pendingReload && P.reloadT <= 0) { P.mags[P.weapon] = WEAPONS[P.weapon].mag; P.pendingReload = false; }
-
-  // mouse fire (held for automatics, per-shot for others via main's edge set)
-  if (S.mouse.down && !P.car) playerFire(S);
-  else if (S.mouse.down && P.car) playerFire(S);
-
-  // bullets — moved in sub-steps of at most 5 units so a fast round can
-  // never tunnel through a target between frames
-  for (const b of S.bullets) {
-    const stepLen = Math.hypot(b.vx, b.vy) * dt;
-    const steps = Math.max(1, Math.ceil(stepLen / 5));
-    const sdt = dt / steps;
-    for (let s = 0; s < steps && b.life > 0; s++) {
-      b.x += b.vx * sdt; b.y += b.vy * sdt; b.life -= sdt;
-      resolveBullet(S, b);
-    }
-  }
-  S.bullets = S.bullets.filter(b => b.life > 0);
-
-  // hostiles: rival crew who hold their ground and shoot
-  for (const p of S.peds) {
-    if (!p.hostile || p.dead) continue;
-    const d = Math.hypot(P.x - p.x, P.y - p.y);
-    p.angle = Math.atan2(P.y - p.y, P.x - p.x);
-    if (d > 105) { p.x += Math.cos(p.angle) * 38 * dt; p.y += Math.sin(p.angle) * 38 * dt; }
-    else if (d < 55) { p.x -= Math.cos(p.angle) * 26 * dt; p.y -= Math.sin(p.angle) * 26 * dt; }
-    p.fireT -= dt;
-    if (d < 190 && p.fireT <= 0 && !P.dead) {
-      p.fireT = 1.15 + Math.random() * 0.5;
-      const w = WEAPONS[1];
-      fireBullet(S, p.x, p.y, p.angle + (Math.random() - 0.5) * 0.16, w, 'hostile');
-      if (S.audio) S.audio.shoot(1, 0.4);
+  function drawEffects(ctx, world) {
+    for (let i = effects.length - 1; i >= 0; i--) {
+      const e = effects[i];
+      if (world.time > e.until) { effects.splice(i, 1); continue; }
+      if (e.kind === "tracer") {
+        ctx.strokeStyle = e.enemy ? "rgba(255,90,70,0.85)" : "rgba(255,230,150,0.9)";
+        ctx.lineWidth = 0.22;
+        ctx.beginPath(); ctx.moveTo(e.x1, e.y1); ctx.lineTo(e.x2, e.y2); ctx.stroke();
+      } else if (e.kind === "flash") {
+        ctx.fillStyle = "rgba(255,210,90,0.9)";
+        ctx.beginPath(); ctx.arc(e.x, e.y, 0.8, 0, Math.PI * 2); ctx.fill();
+      }
     }
   }
 
-  // particles
-  for (const pt of S.particles) {
-    pt.x += pt.vx * dt; pt.y += pt.vy * dt; pt.life -= dt;
-  }
-  S.particles = S.particles.filter(pt => pt.life > 0);
-  if (S.flashRed > 0) S.flashRed = Math.max(0, S.flashRed - dt * 2.4);
-}
+  return { punch, shoot, update, drawEffects, effects };
+})();
+
+window.SBCombat = SBCombat;

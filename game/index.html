@@ -2,12 +2,28 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Solano Bay — an original open-world crime game</title>
-<link rel="stylesheet" href="css/style.css">
+<style>
+  html, body { margin: 0; padding: 0; background: #0b0e14; height: 100%; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { width: min(100vw, 160vh); height: auto; display: block; background: #175d6e; }
+</style>
 </head>
 <body>
 <canvas id="game" width="1280" height="800"></canvas>
-<script type="module" src="src/main.js"></script>
+<script src="src/rng.js"></script>
+<script src="src/config.js"></script>
+<script src="src/city.js"></script>
+<script src="src/render.js"></script>
+<script src="src/minimap.js"></script>
+<script src="src/input.js"></script>
+<script src="src/vehicles.js"></script>
+<script src="src/pedestrians.js"></script>
+<script src="src/wanted.js"></script>
+<script src="src/combat.js"></script>
+<script src="src/missions.js"></script>
+<script src="src/audio.js"></script>
+<script src="src/save.js"></script>
+<script src="src/main.js"></script>
 </body>
 </html>
